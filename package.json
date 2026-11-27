@@ -1,0 +1,20 @@
+{
+  "name": "doomsday-gunner-minigame",
+  "version": "1.0.0",
+  "private": true,
+  "description": "末日枪手突围 - 轻量竖屏打桶射击小游戏（支持微信与抖音双端纯广告变现）",
+  "type": "module",
+  "sideEffects": false,
+  "scripts": {
+    "dev": "vite --port 5175",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit && vite build",
+    "build:minigame": "tsc --noEmit && vite build --config vite.minigame.config.ts && node scripts/package-minigame.mjs",
+    "audit": "node scripts/audit-compliance.mjs",
+    "preview": "vite preview --port 4175"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.2",
+    "vite": "^6.2.0"
+  }
+}

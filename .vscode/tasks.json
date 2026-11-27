@@ -1,0 +1,17 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "一键打包微信与抖音小游戏",
+      "type": "npm",
+      "script": "build:minigame",
+      "problemMatcher": []
+    },
+    {
+      "label": "运行双端合规自查",
+      "type": "npm",
+      "script": "audit",
+      "problemMatcher": []
+    }
+  ]
+}
