@@ -7,6 +7,7 @@ export interface WebOverlayHooks {
   onResetSave: () => void;
   getPerfMetrics?: () => PerfMetrics | null;
   onStartStressTest?: () => void;
+  onUnlockAll?: () => void;
 }
 
 const WEAPON_LABEL_MAP: Record<string, string> = {
@@ -102,12 +103,17 @@ export function mountWebAdOverlay(
         <input id="iaa-fail-toggle" type="checkbox" />
       </div>
       <div class="iaa-row">
+        <label for="iaa-sidebar-toggle">模拟抖音侧边栏进入</label>
+        <input id="iaa-sidebar-toggle" type="checkbox" />
+      </div>
+      <div class="iaa-row">
         <label for="iaa-perf-toggle">实时性能监控 (FPS / 实体)</label>
         <input id="iaa-perf-toggle" type="checkbox" checked />
       </div>
       <div class="iaa-card" data-role="perf-card"></div>
       <div class="iaa-card" data-role="cooldown-card"></div>
       <div class="iaa-card" data-role="stats-card"></div>
+      <button type="button" class="iaa-stress-btn" data-role="btn-unlock-all">🔓 一键解锁全关卡与无尽模式</button>
       <button type="button" class="iaa-stress-btn" data-role="btn-stress">⚡ 极限压测（加特林+10人+尸王狂暴）</button>
       <button type="button" class="iaa-reset-btn" data-role="btn-reset">一键重置本地存档</button>
     </div>
@@ -118,10 +124,12 @@ export function mountWebAdOverlay(
   const debugToggle = debugEl.querySelector('[data-role="debug-toggle"]') as HTMLButtonElement;
   const platBtns = Array.from(debugEl.querySelectorAll('button[data-plat]')) as HTMLButtonElement[];
   const failCheckbox = debugEl.querySelector('#iaa-fail-toggle') as HTMLInputElement;
+  const sidebarCheckbox = debugEl.querySelector('#iaa-sidebar-toggle') as HTMLInputElement;
   const perfCheckbox = debugEl.querySelector('#iaa-perf-toggle') as HTMLInputElement;
   const perfCard = debugEl.querySelector('[data-role="perf-card"]') as HTMLElement;
   const cooldownCard = debugEl.querySelector('[data-role="cooldown-card"]') as HTMLElement;
   const statsCard = debugEl.querySelector('[data-role="stats-card"]') as HTMLElement;
+  const unlockAllBtn = debugEl.querySelector('[data-role="btn-unlock-all"]') as HTMLButtonElement;
   const stressBtn = debugEl.querySelector('[data-role="btn-stress"]') as HTMLButtonElement;
   const resetBtn = debugEl.querySelector('[data-role="btn-reset"]') as HTMLButtonElement;
 
@@ -139,6 +147,16 @@ export function mountWebAdOverlay(
 
   failCheckbox.addEventListener('change', () => {
     adManager.setForceFail(failCheckbox.checked);
+  });
+
+  sidebarCheckbox.addEventListener('change', () => {
+    if (sidebarCheckbox.checked) {
+      adManager.setSimulatedPlatform('douyin');
+    }
+  });
+
+  unlockAllBtn.addEventListener('click', () => {
+    hooks.onUnlockAll?.();
   });
 
   stressBtn.addEventListener('click', () => {
@@ -225,6 +243,7 @@ export function mountWebAdOverlay(
   return {
     getSimulatedPlatform: () => adManager.getSimulatedPlatform(),
     shouldForceFail: () => adManager.isForceFail(),
+    isSimulatedSidebarLaunch: () => sidebarCheckbox.checked,
     showBanner: () => {
       bannerEl.classList.remove('hidden');
       refreshDebugPanel();

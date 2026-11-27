@@ -207,6 +207,10 @@ export class GameEngine {
   private airdropTriggeredThisRun = false;
   private resultClaimed = false;
   private hazardHurtCd = 0;
+  private tutorialActive = false;
+  private tutorialTimer = 0;
+  private tutorialDragAccum = 0;
+  private tutorialFade = 0;
   private toast: ToastMessage | null = null;
   private unbindFns: Array<() => void> = [];
   private currentDpr = 1.5;
@@ -447,6 +451,13 @@ export class GameEngine {
       bossSpawned: this.bossSpawned,
       bossRef: this.bossRef,
       bossState: this.bossState,
+      effectivePlatform: this.sdk.getEffectiveAdPlatform(),
+      endlessUnlocked: this.saveManager.isEndlessUnlocked(),
+      tutorialAlpha: 0,
+      sidebar: this.sdk.getSidebarStatus(),
+      recorder: this.sdk.getRecorderSnapshot(),
+      canClaimSidebarReward: this.saveManager.canClaimDailySidebarReward(),
+      canClaimVideoReward: this.saveManager.canClaimDailyVideoReward(),
       kills: this.kills,
       runCoins: this.runCoins,
       combo: this.combo,
@@ -478,7 +489,13 @@ export class GameEngine {
         }
       },
       onStartBattle: () => this.startGame('campaign', false),
-      onStartEndless: () => this.startGame('endless', false),
+      onStartEndless: () => {
+        if (!this.saveManager.isEndlessUnlocked()) {
+          this.showToast('通关第 1 关即可解锁无尽狂潮', '#fbbf24');
+          return;
+        }
+        this.startGame('endless', false);
+      },
       onPrevLevel: () => {
         const curSave = this.saveManager.getData();
         this.saveManager.selectLevel(curSave.selectedLevel - 1);
@@ -581,12 +598,68 @@ export class GameEngine {
         this.sdk.setMuted(next);
         this.showToast(next ? '已开启静音' : '已开启音效');
       },
+      onOpenAgeModal: () => this.setState('AGE_MODAL'),
+      onCloseAgeModal: () => this.setState('MENU'),
+      onToggleVibrate: () => {
+        const next = !this.saveManager.getData().vibrateEnabled;
+        this.saveManager.setVibrateEnabled(next);
+        this.sdk.setVibrateEnabled(next);
+        if (next) {
+          this.sdk.vibrate('light');
+        }
+        this.showToast(next ? '已开启震动反馈' : '已关闭震动反馈');
+      },
+      onClickSidebarGift: () => {
+        if (!this.saveManager.canClaimDailySidebarReward()) {
+          this.showToast('今日侧边栏复访礼已领取', '#94a3b8');
+          return;
+        }
+        if (this.sdk.getSidebarStatus().fromSidebar) {
+          if (this.saveManager.claimDailySidebarReward(200)) {
+            this.sdk.playSound('victory');
+            this.sdk.vibrate('medium');
+            this.showToast('侧边栏复访礼到账！获得 200 金币', '#4ade80');
+          }
+          return;
+        }
+        this.sdk.navigateToSidebar();
+        this.showToast('请从侧边栏重新进入游戏领取 200 金币', '#fde047', 2.4);
+      },
+      onShareScore: () => {
+        const shareMsg =
+          this.mode === 'endless'
+            ? `我在末日枪手突围无尽狂潮守到第${this.endlessWave}波，消灭${this.kills}名丧尸！`
+            : `我在末日枪手突围第${this.currentLevel.id}关消灭了${this.kills}名丧尸，等你来战！`;
+        void this.sdk.shareScore(shareMsg).then((res) => {
+          this.showToast(res.message, res.shared ? '#4ade80' : '#fbbf24');
+        });
+      },
+      onShareHighlightVideo: () => {
+        const videoTitle =
+          this.mode === 'endless'
+            ? `末日狂潮第${this.endlessWave}波斩杀${this.kills}只丧尸高能集锦`
+            : `末日突围第${this.currentLevel.id}关击退熔岩尸王高能时刻`;
+        void this.sdk.shareRecordedVideo(videoTitle).then((res) => {
+          if (!res.shared) {
+            this.showToast(res.message, '#fbbf24');
+            return;
+          }
+          if (this.saveManager.claimDailyVideoReward(150)) {
+            this.sdk.playSound('victory');
+            this.sdk.vibrate('medium');
+            this.showToast('视频发布成功！首发布奖励 150 金币', '#fde047', 2.6);
+          } else {
+            this.showToast(res.message, '#4ade80');
+          }
+        });
+      },
     };
   }
 
   public start(): void {
     const data = this.saveManager.getData();
     this.sdk.setMuted(data.muted);
+    this.sdk.setVibrateEnabled(data.vibrateEnabled);
     this.currentLevel = getLevelConfig(data.selectedLevel);
     this.assetLoader.loadAll();
 
@@ -602,6 +675,9 @@ export class GameEngine {
         onDragStart: () => {},
         onDragMove: (_lx, _ly, deltaX) => {
           if (this.state === 'PLAYING' && !this.pausedByAd) {
+            if (this.tutorialActive) {
+              this.tutorialDragAccum += Math.abs(deltaX);
+            }
             this.targetX = clamp(
               this.targetX + deltaX * 1.15,
               ROAD_LEFT + 30,
@@ -734,10 +810,17 @@ export class GameEngine {
     this.showToast('已启动极限压测：重型加特林十人小队迎战狂暴尸王', '#fde047', 2.6);
   }
 
+  /** 仅限浏览器调试台调用：一键解锁全关卡与无尽狂潮模式 */
+  public unlockAllForDebug(): void {
+    this.saveManager.unlockAllForDebug(LEVELS.length);
+    this.showToast('已解锁全部关卡与无尽狂潮模式', '#4ade80');
+  }
+
   public syncSaveAfterReset(): void {
     const data = this.saveManager.getData();
     this.currentLevel = getLevelConfig(data.selectedLevel);
     this.sdk.setMuted(data.muted);
+    this.sdk.setVibrateEnabled(data.vibrateEnabled);
     this.setState('MENU');
     this.showToast('本地存档已重置', '#38bdf8');
   }
@@ -854,12 +937,24 @@ export class GameEngine {
     this.airdrop.claimed = false;
 
     this.saveManager.incrementRunCount();
+    if (!this.saveManager.getData().tutorialDone) {
+      this.tutorialActive = true;
+      this.tutorialTimer = 0;
+      this.tutorialDragAccum = 0;
+      this.tutorialFade = 1;
+    } else {
+      this.tutorialActive = false;
+      this.tutorialTimer = 0;
+      this.tutorialDragAccum = 0;
+      this.tutorialFade = 0;
+    }
+    this.sdk.startBattleRecording();
     this.setState('PLAYING');
 
     if (withSuperStart) {
       this.showToast(`满配开局！重型加特林与 ${this.squadCount} 名队友出击`, '#4ade80');
     } else if (mode === 'endless') {
-      this.showToast('无尽尸潮第1波 · 准备迎战', '#c084fc');
+      this.showToast('无尽狂潮第1波 · 准备迎战', '#c084fc');
     } else {
       this.showToast(`第${this.currentLevel.id}关·${this.currentLevel.name} · 准备迎战`);
     }
@@ -887,6 +982,7 @@ export class GameEngine {
 
   private triggerGameOver(victory: boolean): void {
     this.isVictory = victory;
+    this.sdk.stopBattleRecording();
     this.resetBossState();
     this.saveManager.recordBestKills(this.kills);
 
@@ -956,10 +1052,24 @@ export class GameEngine {
     }
 
     if (this.keyAxis !== 0) {
-      this.targetX += this.keyAxis * 500 * dt;
+      const keyMove = this.keyAxis * 500 * dt;
+      this.targetX += keyMove;
+      if (this.tutorialActive) {
+        this.tutorialDragAccum += Math.abs(keyMove);
+      }
     }
     this.targetX = clamp(this.targetX, ROAD_LEFT + 30, ROAD_RIGHT - 30);
     this.squadX += (this.targetX - this.squadX) * Math.min(1, dt * 18);
+
+    if (this.tutorialActive) {
+      this.tutorialTimer += dt;
+      if (this.tutorialDragAccum >= 95 || this.tutorialTimer >= 5.0) {
+        this.tutorialActive = false;
+        this.saveManager.markTutorialDone();
+      }
+    } else if (this.tutorialFade > 0) {
+      this.tutorialFade = Math.max(0, this.tutorialFade - dt * 2.5);
+    }
 
     const lv = this.currentLevel;
     const skin = getSkinDef(this.saveManager.getData().equippedSkin);
@@ -1003,9 +1113,15 @@ export class GameEngine {
       }
     }
 
-    // 尸王登场 1.5 秒红色警戒演出与正式入场
+    const isBossWave = this.mode === 'campaign' || this.endlessWave % 2 === 0;
+
+    // 尸王登场 1.5 秒红色警戒演出与正式入场（无尽模式每逢偶数波登场强化尸王，奇数波满 40 秒直接推进波次）
     if (!this.bossSpawned && !this.bossState.alertPending && this.elapsed >= lv.duration) {
-      this.triggerBossAlert();
+      if (isBossWave) {
+        this.triggerBossAlert();
+      } else {
+        this.advanceEndlessToNextWave();
+      }
     } else if (this.bossState.alertPending) {
       this.bossState.alertTimer -= dt;
       this.addShake(4, 0.12);
@@ -1184,6 +1300,23 @@ export class GameEngine {
     z.rageTimer = 0;
     z.x = clamp(x, ROAD_LEFT + 26, ROAD_RIGHT - 26);
     z.y = y;
+  }
+
+  private advanceEndlessToNextWave(): void {
+    this.runCoins += this.currentLevel.clearCoins;
+    this.squadCount = Math.min(36, this.squadCount + 1);
+    this.sdk.playSound('gate_pos');
+    this.endlessWave += 1;
+    this.currentLevel = getEndlessWaveConfig(this.endlessWave);
+    this.elapsed = 0;
+    this.airdropTriggeredThisRun = false;
+    this.airdrop.active = false;
+    this.airdrop.claimed = false;
+    if (this.endlessWave % 2 === 0) {
+      this.showToast(`进入无尽第${this.endlessWave}波！强化尸王即将现身`, '#fde047', 2.6);
+    } else {
+      this.showToast(`进入无尽第${this.endlessWave}波 · 增援一名队友`, '#c084fc', 2.4);
+    }
   }
 
   private triggerBossAlert(): void {
@@ -1778,6 +1911,7 @@ export class GameEngine {
           this.spawnParticles(b.x, b.y, '#e3a857', 3, 120, 5);
           if (br.hp <= 0) {
             this.sdk.playSound('break_barrel');
+            this.sdk.vibrate('light');
             this.addShake(7, 0.16);
             this.spawnParticles(br.x, br.y, '#d99b52', 18, 270, 9);
             this.spawnParticles(br.x, br.y, '#ffe066', 10, 210, 6);
@@ -1833,6 +1967,7 @@ export class GameEngine {
             if (isCrit) {
               this.addShake(5.5, 0.09);
               this.sdk.playSound('crit');
+              this.sdk.vibrate('light');
               this.spawnParticles(b.x, b.y, '#fbbf24', 6, 175, 6);
               this.spawnFloatText(
                 z.x + (Math.random() - 0.5) * 24,
@@ -2189,6 +2324,13 @@ export class GameEngine {
     snap.elapsed = this.elapsed;
     snap.bossSpawned = this.bossSpawned;
     snap.bossRef = this.bossRef;
+    snap.effectivePlatform = this.sdk.getEffectiveAdPlatform();
+    snap.endlessUnlocked = this.saveManager.isEndlessUnlocked();
+    snap.tutorialAlpha = this.tutorialFade;
+    snap.sidebar = this.sdk.getSidebarStatus();
+    snap.recorder = this.sdk.getRecorderSnapshot();
+    snap.canClaimSidebarReward = this.saveManager.canClaimDailySidebarReward();
+    snap.canClaimVideoReward = this.saveManager.canClaimDailyVideoReward();
     snap.kills = this.kills;
     snap.runCoins = this.runCoins;
     snap.combo = this.combo;

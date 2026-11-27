@@ -1,4 +1,5 @@
 import { SKINS } from '../config/weapons';
+import type { RecorderSnapshot, SidebarStatus } from '../sdk/PlatformSDK';
 import type { AssetLoader } from './AssetLoader';
 import {
   drawButton,
@@ -66,6 +67,13 @@ export interface RenderSnapshot {
   bossSpawned: boolean;
   bossRef: Zombie | null;
   bossState: BossCombatState;
+  effectivePlatform: 'wechat' | 'douyin';
+  endlessUnlocked: boolean;
+  tutorialAlpha: number;
+  sidebar: SidebarStatus;
+  recorder: RecorderSnapshot;
+  canClaimSidebarReward: boolean;
+  canClaimVideoReward: boolean;
   kills: number;
   runCoins: number;
   combo: number;
@@ -113,6 +121,12 @@ export interface RenderActions {
   onBackToMenu: () => void;
   onTogglePause: () => void;
   onToggleMute: () => void;
+  onOpenAgeModal: () => void;
+  onCloseAgeModal: () => void;
+  onToggleVibrate: () => void;
+  onClickSidebarGift: () => void;
+  onShareScore: () => void;
+  onShareHighlightVideo: () => void;
 }
 
 const FONT_FAMILY = '"PingFang SC", "Microsoft YaHei", sans-serif';
@@ -218,6 +232,17 @@ export class Renderer {
     radius: 20,
   };
 
+  private readonly menuEndlessLockedBtnStyle: ButtonStyle = {
+    fillTop: '#475569',
+    fillBottom: '#334155',
+    borderColor: '#64748b',
+    textColor: '#cbd5e1',
+    fontSize: 26,
+    subText: '通关第 1 关解锁',
+    subTextColor: '#fde047',
+    radius: 20,
+  };
+
   private readonly upgradeBuyStyle: ButtonStyle = {
     fillTop: '#22c55e',
     fillBottom: '#16a34a',
@@ -298,8 +323,14 @@ export class Renderer {
 
     if (snap.state === 'PLAYING') {
       this.renderHUD(snap, actions);
+      if (snap.tutorialAlpha > 0.01) {
+        this.renderSwipeTutorial(snap);
+      }
     } else if (snap.state === 'MENU') {
       this.renderMenuOverlay(snap, actions);
+    } else if (snap.state === 'AGE_MODAL') {
+      this.renderMenuOverlay(snap, actions, true);
+      this.renderAgeModal(actions);
     } else if (snap.state === 'ARMORY') {
       this.renderMenuOverlay(snap, actions, true);
       this.renderArmoryModal(snap, actions);
@@ -1115,7 +1146,9 @@ export class Renderer {
         ? snap.mode === 'endless'
           ? `第${snap.endlessWave}波 · 尸王战`
           : '熔岩尸王战'
-        : `距尸王 ${remainSec} 秒`;
+        : snap.mode === 'endless' && snap.endlessWave % 2 === 1
+          ? `下一波 ${remainSec} 秒`
+          : `距尸王 ${remainSec} 秒`;
     ctx.fillText(progText, bx + bw / 2, top + 64);
     ctx.restore();
 
@@ -1334,38 +1367,57 @@ export class Renderer {
     ctx.fillStyle = this.menuOverlayGrad;
     ctx.fillRect(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT);
 
-    // 顶部金币栏、军械库、静音按钮
+    // 顶部金币栏、军械库、震动、音效按钮
     ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
-    drawRoundedRect(ctx, 22, top, 210, 50, 25);
+    drawRoundedRect(ctx, 22, top, 178, 48, 24);
     ctx.fill();
     ctx.strokeStyle = 'rgba(250, 204, 21, 0.55)';
     ctx.lineWidth = 2;
-    drawRoundedRect(ctx, 22, top, 210, 50, 25);
+    drawRoundedRect(ctx, 22, top, 178, 48, 24);
     ctx.stroke();
 
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillStyle = '#fde047';
-    ctx.font = '900 22px "PingFang SC", "Microsoft YaHei", sans-serif';
-    ctx.fillText(`金币：${snap.save.coins}`, 127, top + 25);
+    ctx.font = `900 20px ${FONT_FAMILY}`;
+    ctx.fillText(`金币：${snap.save.coins}`, 111, top + 24);
 
     if (!disableInteraction) {
       drawButton(
         ctx,
         this.hitBoxes,
         'menu_armory',
-        LOGICAL_WIDTH - 252,
+        394,
         top,
-        130,
-        50,
+        104,
+        48,
         '军械库',
         actions.onOpenArmory,
         {
           fillTop: '#7c3aed',
           fillBottom: '#5b21b6',
           borderColor: '#ddd6fe',
-          fontSize: 20,
-          radius: 16,
+          fontSize: 19,
+          radius: 15,
+        },
+      );
+
+      drawButton(
+        ctx,
+        this.hitBoxes,
+        'menu_vibrate',
+        506,
+        top,
+        96,
+        48,
+        snap.save.vibrateEnabled ? '震动开' : '震动关',
+        actions.onToggleVibrate,
+        {
+          fillTop: snap.save.vibrateEnabled ? '#0284c7' : '#334155',
+          fillBottom: snap.save.vibrateEnabled ? '#0369a1' : '#1e293b',
+          borderColor: snap.save.vibrateEnabled ? '#7dd3fc' : '#64748b',
+          fontSize: 18,
+          radius: 15,
         },
       );
 
@@ -1373,19 +1425,79 @@ export class Renderer {
         ctx,
         this.hitBoxes,
         'menu_mute',
-        LOGICAL_WIDTH - 112,
+        610,
         top,
-        90,
-        50,
+        88,
+        48,
         snap.save.muted ? '静音' : '音效',
         actions.onToggleMute,
         {
           fillTop: '#334155',
           fillBottom: '#1e293b',
-          fontSize: 19,
-          radius: 16,
+          fontSize: 18,
+          radius: 15,
         },
       );
+    }
+
+    // 左上角「12+ 适龄提示」纯 Canvas 标准徽章
+    const ageX = 22;
+    const ageY = top + 56;
+    const ageW = 74;
+    const ageH = 62;
+    drawRoundedRect(ctx, ageX, ageY, ageW, ageH, 10);
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+    drawRoundedRect(ctx, ageX, ageY, ageW, 38, 10);
+    ctx.fillStyle = '#16a34a';
+    ctx.fill();
+    ctx.fillRect(ageX, ageY + 26, ageW, 12);
+    ctx.strokeStyle = '#86efac';
+    ctx.lineWidth = 2;
+    drawRoundedRect(ctx, ageX, ageY, ageW, ageH, 10);
+    ctx.stroke();
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `900 22px ${FONT_FAMILY}`;
+    ctx.fillText('12+', ageX + ageW * 0.5, ageY + 20);
+    ctx.fillStyle = '#166534';
+    ctx.font = `900 14px ${FONT_FAMILY}`;
+    ctx.fillText('适龄提示', ageX + ageW * 0.5, ageY + 50);
+
+    if (!disableInteraction) {
+      this.hitBoxes.registerRect('menu_age_badge', ageX - 6, ageY - 6, ageW + 12, ageH + 12, actions.onOpenAgeModal);
+
+      // 抖音侧边栏复访领奖入口
+      if (snap.sidebar.supported) {
+        const sidebarSub = !snap.canClaimSidebarReward
+          ? '今日已领 200'
+          : snap.sidebar.fromSidebar
+            ? '点击领 200 金币'
+            : '去侧边栏领 200';
+        drawButton(
+          ctx,
+          this.hitBoxes,
+          'menu_sidebar_gift',
+          LOGICAL_WIDTH - 196,
+          top + 56,
+          174,
+          50,
+          '侧边栏复访礼',
+          actions.onClickSidebarGift,
+          {
+            fillTop: !snap.canClaimSidebarReward ? '#475569' : snap.sidebar.fromSidebar ? '#22c55e' : '#0284c7',
+            fillBottom: !snap.canClaimSidebarReward ? '#334155' : snap.sidebar.fromSidebar ? '#16a34a' : '#0369a1',
+            borderColor: '#fef08a',
+            fontSize: 17,
+            subText: sidebarSub,
+            subTextColor: '#fef08a',
+            radius: 14,
+            disabled: !snap.canClaimSidebarReward,
+          },
+        );
+      }
     }
 
     // 2D 精绘熔岩尸王展示
@@ -1509,7 +1621,7 @@ export class Renderer {
       disableInteraction,
     );
 
-    // 主菜单核心开局按钮区（底边最高 998 <= 1095，严格保留防误触间距）
+    // 主菜单核心开局按钮区（底边最高 958 <= 1095，完整避让健康忠告与底部 Banner 安全区）
     if (!disableInteraction) {
       this.menuSuperBtnStyle.pulseScale = 1 + Math.sin(snap.clock * 4) * 0.015;
       drawButton(
@@ -1517,9 +1629,9 @@ export class Renderer {
         this.hitBoxes,
         'menu_super_start',
         70,
-        718,
+        686,
         LOGICAL_WIDTH - 140,
-        88,
+        84,
         '看广告满配开局（加特林+5人）',
         actions.onStartSuperBattle,
         this.menuSuperBtnStyle,
@@ -1531,9 +1643,9 @@ export class Renderer {
         this.hitBoxes,
         'menu_start',
         70,
-        826,
+        784,
         LOGICAL_WIDTH - 140,
-        86,
+        84,
         '开始关卡突围',
         actions.onStartBattle,
         this.menuStartBtnStyle,
@@ -1542,21 +1654,37 @@ export class Renderer {
       this.menuEndlessBtnStyle.subText =
         snap.save.endlessBestWave > 0
           ? `最高第 ${snap.save.endlessBestWave} 波 · 最高击杀 ${snap.save.endlessBestKills}`
-          : '无限波次尸王 · 挑战生存极限';
+          : '40秒进阶·偶数波强化尸王';
 
       drawButton(
         ctx,
         this.hitBoxes,
         'menu_endless',
         70,
-        928,
+        882,
         LOGICAL_WIDTH - 140,
         76,
-        '无尽尸潮模式',
+        '无尽狂潮模式',
         actions.onStartEndless,
-        this.menuEndlessBtnStyle,
+        snap.endlessUnlocked ? this.menuEndlessBtnStyle : this.menuEndlessLockedBtnStyle,
       );
     }
+
+    // 标准《健康游戏忠告》（位于 Banner 上方安全区）
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.78)';
+    drawRoundedRect(ctx, 26, 1044, LOGICAL_WIDTH - 52, 84, 14);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(148, 163, 184, 0.28)';
+    ctx.lineWidth = 1.5;
+    drawRoundedRect(ctx, 26, 1044, LOGICAL_WIDTH - 52, 84, 14);
+    ctx.stroke();
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#cbd5e1';
+    ctx.font = `600 18px ${FONT_FAMILY}`;
+    ctx.fillText('抵制不良游戏，拒绝盗版游戏。注意自我保护，谨防受骗上当。', LOGICAL_WIDTH / 2, 1070);
+    ctx.fillText('适度游戏益脑，沉迷游戏伤身。合理安排时间，享受健康生活。', LOGICAL_WIDTH / 2, 1102);
 
     // 底部 Banner 安全区提示
     ctx.fillStyle = 'rgba(15, 23, 42, 0.55)';
@@ -1566,17 +1694,101 @@ export class Renderer {
     ctx.font = '700 18px "PingFang SC", "Microsoft YaHei", sans-serif';
     ctx.fillText('底部广告安全区 · 严禁误触区域', LOGICAL_WIDTH / 2, BANNER_ZONE_TOP + 50);
 
-    // 若素材仍在初始化加载，底部显示小进度提示
+    // 若素材仍在初始化加载，安全空白处显示进度提示
     if (!this.assets.isReady) {
       ctx.fillStyle = '#38bdf8';
       ctx.font = '700 18px "PingFang SC", "Microsoft YaHei", sans-serif';
       ctx.fillText(
         `精绘资源加载中 ${this.assets.loadedCount} / ${this.assets.totalCount}`,
         LOGICAL_WIDTH / 2,
-        1048,
+        1002,
       );
     }
 
+    ctx.restore();
+  }
+
+  private renderSwipeTutorial(snap: RenderSnapshot): void {
+    const ctx = this.ctx;
+    const cx = Math.max(210, Math.min(LOGICAL_WIDTH - 210, snap.squadX));
+    const y = PLAYER_Y + 132;
+    const offset = Math.sin(snap.clock * 6) * 14;
+
+    ctx.save();
+    ctx.globalAlpha = snap.tutorialAlpha;
+    drawRoundedRect(ctx, cx - 178, y - 28, 356, 56, 28);
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.78)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(56, 189, 248, 0.75)';
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+
+    ctx.strokeStyle = '#fde047';
+    ctx.lineWidth = 4;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(cx - 126 - offset, y - 10);
+    ctx.lineTo(cx - 144 - offset, y);
+    ctx.lineTo(cx - 126 - offset, y + 10);
+    ctx.moveTo(cx + 126 + offset, y - 10);
+    ctx.lineTo(cx + 144 + offset, y);
+    ctx.lineTo(cx + 126 + offset, y + 10);
+    ctx.stroke();
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = `900 22px ${FONT_FAMILY}`;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText('左右滑动控制走位', cx, y + 1);
+    ctx.restore();
+  }
+
+  private renderAgeModal(actions: RenderActions): void {
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.fillStyle = 'rgba(2, 6, 23, 0.86)';
+    ctx.fillRect(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT);
+    drawPanelCard(ctx, 56, 260, LOGICAL_WIDTH - 112, 620, '适龄提示说明', '#22c55e');
+
+    drawRoundedRect(ctx, LOGICAL_WIDTH / 2 - 48, 360, 96, 54, 14);
+    ctx.fillStyle = '#16a34a';
+    ctx.fill();
+    ctx.strokeStyle = '#86efac';
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `900 32px ${FONT_FAMILY}`;
+    ctx.fillText('12+', LOGICAL_WIDTH / 2, 388);
+
+    ctx.fillStyle = '#e2e8f0';
+    ctx.font = `700 22px ${FONT_FAMILY}`;
+    ctx.fillText('1. 本游戏为架空末日题材单机休闲射击玩法，', LOGICAL_WIDTH / 2, 466);
+    ctx.fillText('适用于年满 12 周岁及以上的用户使用。', LOGICAL_WIDTH / 2, 506);
+    ctx.fillText('2. 游戏内不含任何付费充值或现金交易系统，', LOGICAL_WIDTH / 2, 562);
+    ctx.fillText('所有玩法道具均可通过局内体验与养成解锁。', LOGICAL_WIDTH / 2, 602);
+    ctx.fillText('3. 请合理安排游戏时间，注意用眼与劳逸结合。', LOGICAL_WIDTH / 2, 658);
+
+    drawButton(
+      ctx,
+      this.hitBoxes,
+      'age_modal_ok',
+      160,
+      756,
+      LOGICAL_WIDTH - 320,
+      78,
+      '我知道了',
+      actions.onCloseAgeModal,
+      {
+        fillTop: '#22c55e',
+        fillBottom: '#16a34a',
+        borderColor: '#bbf7d0',
+        fontSize: 28,
+        radius: 20,
+      },
+    );
     ctx.restore();
   }
 
@@ -1585,16 +1797,16 @@ export class Renderer {
     ctx.save();
     ctx.fillStyle = 'rgba(2, 6, 23, 0.78)';
     ctx.fillRect(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT);
-    drawPanelCard(ctx, 84, 360, LOGICAL_WIDTH - 168, 430, '战斗已暂停', '#38bdf8');
+    drawPanelCard(ctx, 84, 320, LOGICAL_WIDTH - 168, 500, '战斗已暂停', '#38bdf8');
 
     drawButton(
       ctx,
       this.hitBoxes,
       'pause_resume',
       140,
-      490,
+      434,
       LOGICAL_WIDTH - 280,
-      82,
+      76,
       '继续突围',
       actions.onTogglePause,
       {
@@ -1608,11 +1820,47 @@ export class Renderer {
     drawButton(
       ctx,
       this.hitBoxes,
+      'pause_mute',
+      140,
+      528,
+      212,
+      64,
+      snap.save.muted ? '音效：关' : '音效：开',
+      actions.onToggleMute,
+      {
+        fillTop: snap.save.muted ? '#475569' : '#0284c7',
+        fillBottom: snap.save.muted ? '#334155' : '#0369a1',
+        fontSize: 22,
+        radius: 16,
+      },
+    );
+
+    drawButton(
+      ctx,
+      this.hitBoxes,
+      'pause_vibrate',
+      368,
+      528,
+      212,
+      64,
+      snap.save.vibrateEnabled ? '震动：开' : '震动：关',
+      actions.onToggleVibrate,
+      {
+        fillTop: snap.save.vibrateEnabled ? '#0284c7' : '#475569',
+        fillBottom: snap.save.vibrateEnabled ? '#0369a1' : '#334155',
+        fontSize: 22,
+        radius: 16,
+      },
+    );
+
+    drawButton(
+      ctx,
+      this.hitBoxes,
       'pause_restart',
       140,
-      592,
+      612,
       LOGICAL_WIDTH - 280,
-      74,
+      70,
       snap.mode === 'endless' ? '重开无尽' : '重新本关',
       actions.onRestartBattle,
       {
@@ -1628,9 +1876,9 @@ export class Renderer {
       this.hitBoxes,
       'pause_menu',
       140,
-      686,
+      700,
       LOGICAL_WIDTH - 280,
-      68,
+      66,
       '返回主菜单',
       actions.onBackToMenu,
       {
@@ -1796,48 +2044,48 @@ export class Renderer {
     const resultBorder =
       snap.mode === 'endless' ? '#a855f7' : snap.isVictory ? '#22c55e' : '#ef4444';
 
-    drawPanelCard(ctx, 56, 210, LOGICAL_WIDTH - 112, 820, resultTitle, resultBorder);
+    drawPanelCard(ctx, 56, 200, LOGICAL_WIDTH - 112, 840, resultTitle, resultBorder);
 
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     if (snap.mode === 'endless') {
       ctx.fillStyle = '#f8fafc';
-      ctx.font = '800 26px "PingFang SC", "Microsoft YaHei", sans-serif';
+      ctx.font = '800 25px "PingFang SC", "Microsoft YaHei", sans-serif';
       ctx.fillText(
-        `到达波次：第${snap.endlessWave}波 · 生存${Math.floor(snap.totalSurviveSec)}秒`,
+        `到达波次：第${snap.endlessWave}波（最高 第${Math.max(snap.endlessWave, snap.save.endlessBestWave)}波）`,
         LOGICAL_WIDTH / 2,
-        338,
+        328,
       );
 
       ctx.fillStyle = '#cbd5e1';
-      ctx.font = '700 24px "PingFang SC", "Microsoft YaHei", sans-serif';
+      ctx.font = '700 22px "PingFang SC", "Microsoft YaHei", sans-serif';
       ctx.fillText(
-        `消灭感染者：${snap.kills}（纪录 ${snap.save.endlessBestKills}）`,
+        `消灭感染者：${snap.kills}（最高 ${Math.max(snap.kills, snap.save.endlessBestKills)}） · 生存${Math.floor(snap.totalSurviveSec)}秒`,
         LOGICAL_WIDTH / 2,
-        384,
+        374,
       );
 
       if (snap.isNewEndlessRecord) {
         ctx.fillStyle = '#4ade80';
         ctx.font = '900 22px "PingFang SC", "Microsoft YaHei", sans-serif';
-        ctx.fillText('突破历史最高纪录', LOGICAL_WIDTH / 2, 424);
+        ctx.fillText('突破历史最高纪录', LOGICAL_WIDTH / 2, 412);
       }
 
       ctx.fillStyle = '#fde047';
-      ctx.font = '900 40px "PingFang SC", "Microsoft YaHei", sans-serif';
-      ctx.fillText(`基础金币：+${snap.runCoins}`, LOGICAL_WIDTH / 2, 472);
+      ctx.font = '900 38px "PingFang SC", "Microsoft YaHei", sans-serif';
+      ctx.fillText(`基础金币：+${snap.runCoins}`, LOGICAL_WIDTH / 2, 458);
     } else {
       ctx.fillStyle = '#f8fafc';
       ctx.font = '800 26px "PingFang SC", "Microsoft YaHei", sans-serif';
-      ctx.fillText(`关卡：第${snap.level.id}关·${snap.level.name}`, LOGICAL_WIDTH / 2, 342);
+      ctx.fillText(`关卡：第${snap.level.id}关·${snap.level.name}`, LOGICAL_WIDTH / 2, 332);
 
       ctx.fillStyle = '#cbd5e1';
       ctx.font = '700 24px "PingFang SC", "Microsoft YaHei", sans-serif';
-      ctx.fillText(`本局消灭感染者：${snap.kills}`, LOGICAL_WIDTH / 2, 394);
+      ctx.fillText(`本局消灭感染者：${snap.kills}`, LOGICAL_WIDTH / 2, 384);
 
       ctx.fillStyle = '#fde047';
-      ctx.font = '900 42px "PingFang SC", "Microsoft YaHei", sans-serif';
-      ctx.fillText(`基础金币：+${snap.runCoins}`, LOGICAL_WIDTH / 2, 464);
+      ctx.font = '900 40px "PingFang SC", "Microsoft YaHei", sans-serif';
+      ctx.fillText(`基础金币：+${snap.runCoins}`, LOGICAL_WIDTH / 2, 452);
     }
 
     const mult =
@@ -1852,16 +2100,16 @@ export class Renderer {
         this.hitBoxes,
         'res_claim_ad',
         104,
-        546,
+        526,
         LOGICAL_WIDTH - 208,
-        98,
+        92,
         `看广告 ${mult}倍领取`,
         actions.onResultClaimAd,
         {
           fillTop: '#f59e0b',
           fillBottom: '#d97706',
           borderColor: '#fef08a',
-          fontSize: 32,
+          fontSize: 30,
           subText: `可领 ${snap.runCoins * mult} 金币`,
           radius: 22,
         },
@@ -1872,9 +2120,9 @@ export class Renderer {
         this.hitBoxes,
         'res_claim_normal',
         136,
-        668,
+        636,
         LOGICAL_WIDTH - 272,
-        74,
+        70,
         `普通领取 ${snap.runCoins} 金币`,
         actions.onResultClaimNormal,
         {
@@ -1887,7 +2135,7 @@ export class Renderer {
     } else {
       ctx.fillStyle = '#4ade80';
       ctx.font = '900 28px "PingFang SC", "Microsoft YaHei", sans-serif';
-      ctx.fillText('本局奖励已入账', LOGICAL_WIDTH / 2, 610);
+      ctx.fillText('本局奖励已入账', LOGICAL_WIDTH / 2, 598);
     }
 
     drawButton(
@@ -1895,9 +2143,9 @@ export class Renderer {
       this.hitBoxes,
       'res_retry',
       104,
-      790,
+      746,
       244,
-      82,
+      78,
       snap.mode === 'endless' ? '再战无尽' : snap.isVictory ? '挑战下一关' : '再次挑战',
       actions.onRestartBattle,
       {
@@ -1913,9 +2161,9 @@ export class Renderer {
       this.hitBoxes,
       'res_menu',
       372,
-      790,
+      746,
       244,
-      82,
+      78,
       '返回主菜单',
       actions.onBackToMenu,
       {
@@ -1925,6 +2173,50 @@ export class Renderer {
         radius: 18,
       },
     );
+
+    if (snap.effectivePlatform === 'douyin' && snap.recorder.hasVideo) {
+      drawButton(
+        ctx,
+        this.hitBoxes,
+        'res_share_video',
+        104,
+        844,
+        LOGICAL_WIDTH - 208,
+        78,
+        '发布高光视频',
+        actions.onShareHighlightVideo,
+        {
+          fillTop: '#ec4899',
+          fillBottom: '#be185d',
+          borderColor: '#fbcfe8',
+          fontSize: 24,
+          subText: snap.canClaimVideoReward ? '今日首发布奖励 150 金币' : '分享本局精彩瞬间',
+          subTextColor: '#fef08a',
+          radius: 18,
+        },
+      );
+    } else {
+      drawButton(
+        ctx,
+        this.hitBoxes,
+        'res_share_score',
+        104,
+        844,
+        LOGICAL_WIDTH - 208,
+        78,
+        '分享战绩给好友',
+        actions.onShareScore,
+        {
+          fillTop: '#10b981',
+          fillBottom: '#047857',
+          borderColor: '#a7f3d0',
+          fontSize: 24,
+          subText: '邀请好友挑战更高波次',
+          subTextColor: '#fef08a',
+          radius: 18,
+        },
+      );
+    }
 
     ctx.fillStyle = 'rgba(15, 23, 42, 0.55)';
     drawRoundedRect(ctx, 44, BANNER_ZONE_TOP + 12, LOGICAL_WIDTH - 88, 76, 16);

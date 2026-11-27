@@ -28,6 +28,7 @@ function bootstrap(): void {
       },
       getPerfMetrics: () => engineRef?.getPerfMetrics() ?? null,
       onStartStressTest: () => engineRef?.startStressTest(),
+      onUnlockAll: () => engineRef?.unlockAllForDebug(),
     });
     sdk.registerWebBridge(bridge);
   }

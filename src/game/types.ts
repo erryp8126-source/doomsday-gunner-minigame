@@ -23,7 +23,8 @@ export type GameState =
   | 'AIRDROP_MODAL'
   | 'REVIVE_MODAL'
   | 'RESULT'
-  | 'ARMORY';
+  | 'ARMORY'
+  | 'AGE_MODAL';
 
 export type WeaponId = 'pistol' | 'shotgun' | 'gatling' | 'rocket';
 
@@ -245,6 +246,10 @@ export interface SaveData {
   totalRunsPlayed: number;
   totalRewardedAds: number;
   muted: boolean;
+  vibrateEnabled: boolean;
+  tutorialDone: boolean;
+  lastVideoShareRewardDate: string;
+  lastSidebarRewardDate: string;
   endlessBestWave: number;
   endlessBestKills: number;
   endlessBestTimeSec: number;

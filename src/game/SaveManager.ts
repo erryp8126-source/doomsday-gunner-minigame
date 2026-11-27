@@ -5,6 +5,14 @@ const STORAGE_KEY = 'doomsday_gunner_save_v2';
 
 export const MAX_UPGRADE_LEVEL = 20;
 
+export function getTodayDateKey(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
 export function createDefaultSaveData(): SaveData {
   return {
     coins: 0,
@@ -24,6 +32,10 @@ export function createDefaultSaveData(): SaveData {
     totalRunsPlayed: 0,
     totalRewardedAds: 0,
     muted: false,
+    vibrateEnabled: true,
+    tutorialDone: false,
+    lastVideoShareRewardDate: '',
+    lastSidebarRewardDate: '',
     endlessBestWave: 0,
     endlessBestKills: 0,
     endlessBestTimeSec: 0,
@@ -187,6 +199,50 @@ export class SaveManager {
 
   public setMuted(muted: boolean): void {
     this.data.muted = muted;
+    this.save();
+  }
+
+  public isEndlessUnlocked(): boolean {
+    return this.data.unlockedLevel >= 2;
+  }
+
+  public markTutorialDone(): void {
+    if (this.data.tutorialDone) return;
+    this.data.tutorialDone = true;
+    this.save();
+  }
+
+  public setVibrateEnabled(enabled: boolean): void {
+    this.data.vibrateEnabled = enabled;
+    this.save();
+  }
+
+  public canClaimDailyVideoReward(): boolean {
+    return this.data.lastVideoShareRewardDate !== getTodayDateKey();
+  }
+
+  public claimDailyVideoReward(coins = 150): boolean {
+    if (!this.canClaimDailyVideoReward()) return false;
+    this.data.lastVideoShareRewardDate = getTodayDateKey();
+    this.data.coins += Math.floor(coins);
+    this.save();
+    return true;
+  }
+
+  public canClaimDailySidebarReward(): boolean {
+    return this.data.lastSidebarRewardDate !== getTodayDateKey();
+  }
+
+  public claimDailySidebarReward(coins = 200): boolean {
+    if (!this.canClaimDailySidebarReward()) return false;
+    this.data.lastSidebarRewardDate = getTodayDateKey();
+    this.data.coins += Math.floor(coins);
+    this.save();
+    return true;
+  }
+
+  public unlockAllForDebug(maxLevelCount: number): void {
+    this.data.unlockedLevel = Math.max(2, maxLevelCount);
     this.save();
   }
 

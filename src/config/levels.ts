@@ -87,26 +87,27 @@ export function getLevelConfig(levelId: number): LevelConfig {
 }
 
 /**
- * 无尽尸潮模式动态波次生成器（同步对齐加强后难度基准，循环登场熔岩尸王）
+ * 无尽狂潮模式动态波次生成器（每 40 秒推进 1 波，偶数波登场强化版熔岩尸王）
  */
 export function getEndlessWaveConfig(wave: number): LevelConfig {
   const safeWave = Math.max(1, Math.floor(wave));
   const wOffset = safeWave - 1;
   const themeBase = LEVELS[wOffset % LEVELS.length];
+  const bossTier = Math.max(0, Math.floor(safeWave / 2) - 1);
 
   return {
     id: safeWave,
-    name: '无尽尸潮',
+    name: '无尽狂潮',
     subtitle: `第${safeWave}波狂潮`,
-    duration: safeWave === 1 ? 38 : 42,
-    hpMult: Number((1.25 * Math.pow(1.38, wOffset)).toFixed(2)),
-    bossHp: Math.round(2400 * Math.pow(1.45, wOffset)),
+    duration: 40,
+    hpMult: Number((1.25 * Math.pow(1.32, wOffset)).toFixed(2)),
+    bossHp: Math.round(2800 * Math.pow(1.42, bossTier)),
     bossName: `${themeBase.bossName}`,
     bossFireballMin: safeWave >= 4 ? 4 : safeWave >= 3 ? 3 : 2,
     bossFireballMax: safeWave >= 4 ? 4 : 3,
     bossPatrolSpeed: Math.min(170, 105 + wOffset * 12),
     runnerRate: Math.min(0.46, 0.24 + wOffset * 0.04),
     tankRate: Math.min(0.38, 0.16 + wOffset * 0.04),
-    clearCoins: 90 + safeWave * 45,
+    clearCoins: Math.round(80 * Math.pow(1.22, wOffset)),
   };
 }

@@ -55,9 +55,25 @@ export interface InterstitialAdResult {
   reason: 'shown' | 'load_failed' | 'unsupported';
 }
 
+export interface ShareResult {
+  shared: boolean;
+  message: string;
+}
+
+export interface SidebarStatus {
+  supported: boolean;
+  fromSidebar: boolean;
+}
+
+export interface RecorderSnapshot {
+  hasVideo: boolean;
+  durationSec: number;
+}
+
 export interface WebSimulatorBridge {
   getSimulatedPlatform: () => 'wechat' | 'douyin';
   shouldForceFail: () => boolean;
+  isSimulatedSidebarLaunch?: () => boolean;
   showRewardedVideo: (scene: RewardedScene, rewardLabel: string) => Promise<RewardedAdResult>;
   showBanner: () => void;
   hideBanner: () => void;
@@ -90,6 +106,7 @@ const SOUND_TO_BUCKET: Record<SoundEffectName, { key: AudioBucketKey; src: strin
 };
 
 const MAX_PIXEL_RATIO = 1.5;
+const VIBRATE_THROTTLE_MS = 80;
 const AUDIO_POOL_SIZE_PER_BUCKET = 3;
 const AUDIO_THROTTLE_MS = 55;
 const AUDIO_CRIT_THROTTLE_MS = 90;
@@ -99,7 +116,7 @@ export type AudioStateFn = (suspended: boolean) => void;
 
 /**
  * 跨端平台适配中心：统一屏蔽 微信小游戏(wx) / 抖音小游戏(tt) / 浏览器(web) 差异
- * 所有原生广告、存储、震动、触控、安全区和音频调用均通过此类中转。
+ * 所有原生广告、存储、震动、触控、安全区、分享录屏复访与音频调用均通过此类中转。
  */
 export class PlatformSDK {
   public readonly runtime: TargetPlatform;
@@ -108,6 +125,8 @@ export class PlatformSDK {
 
   private muted = false;
   private audioSuspended = false;
+  private vibrateEnabled = true;
+  private lastVibrateMs = 0;
   private webBridge: WebSimulatorBridge | null = null;
   private webSoundPlayer: SoundPlayerFn | null = null;
   private webAudioStateFn: AudioStateFn | null = null;
@@ -119,6 +138,17 @@ export class PlatformSDK {
 
   private bannerAd: any = null;
   private interstitialAd: any = null;
+
+  private ttRecorder: any = null;
+  private recordingActive = false;
+  private recordStartMs = 0;
+  private lastVideoPath = '';
+  private lastVideoDurationSec = 0;
+  private readonly recorderSnapCache: RecorderSnapshot = { hasVideo: false, durationSec: 0 };
+
+  private sidebarSupported = false;
+  private launchedFromSidebar = false;
+  private readonly sidebarStatusCache: SidebarStatus = { supported: false, fromSidebar: false };
 
   /** 小游戏端 InnerAudioContext 实例池（按音效桶各复用 3 个实例并做 55ms/90ms 节流） */
   private readonly minigameAudioPool: any[] = [];
@@ -169,12 +199,84 @@ export class PlatformSDK {
       if (typeof wx.showShareMenu === 'function') {
         wx.showShareMenu({ withShareTicket: true, menus: ['shareAppMessage', 'shareTimeline'] });
       }
+      wx.onShareAppMessage?.(() => ({
+        title: '末日丧尸围城！你能带队守住第几波？',
+        imageUrl: 'assets/sprites/bg_road.jpg',
+      }));
+      wx.onShareTimeline?.(() => ({
+        title: '末日枪手突围！单指操作打爆尸潮，快来挑战！',
+        imageUrl: 'assets/sprites/bg_road.jpg',
+      }));
       this.initWeChatRewardedAd();
     } else if (this.runtime === 'douyin') {
       if (typeof tt.showShareMenu === 'function') {
         tt.showShareMenu({ withShareTicket: false });
       }
+      tt.onShareAppMessage?.(() => ({
+        title: '末日枪手突围！狂扫丧尸群超解压！',
+        imageUrl: 'assets/sprites/bg_road.jpg',
+      }));
+      this.initDouyinRecorder();
+      this.initDouyinSidebar();
       this.initDouyinRewardedAd();
+    }
+  }
+
+  private initDouyinRecorder(): void {
+    if (typeof tt.getGameRecorderManager !== 'function') return;
+    try {
+      this.ttRecorder = tt.getGameRecorderManager();
+      this.ttRecorder.onStart?.(() => {
+        this.recordStartMs = Date.now();
+        this.lastVideoPath = '';
+        this.lastVideoDurationSec = 0;
+      });
+      this.ttRecorder.onStop?.((res: { videoPath?: string; duration?: number } | undefined) => {
+        const elapsedSec =
+          res && typeof res.duration === 'number'
+            ? res.duration
+            : this.recordStartMs > 0
+              ? (Date.now() - this.recordStartMs) / 1000
+              : 0;
+        this.lastVideoDurationSec = Math.max(0, elapsedSec);
+        this.lastVideoPath = elapsedSec >= 3 && res?.videoPath ? res.videoPath : '';
+        this.recordingActive = false;
+      });
+      this.ttRecorder.onError?.(() => {
+        this.recordingActive = false;
+      });
+    } catch {
+      this.ttRecorder = null;
+    }
+  }
+
+  private initDouyinSidebar(): void {
+    try {
+      if (typeof tt.checkScene === 'function') {
+        tt.checkScene({
+          scene: 'sidebar',
+          success: (res: { isExist?: boolean } | undefined) => {
+            this.sidebarSupported = Boolean(res?.isExist ?? true);
+          },
+          fail: () => {
+            this.sidebarSupported = false;
+          },
+        });
+      }
+      const checkLaunch = (opt: any) => {
+        if (!opt) return;
+        if (opt.launch_from === 'homepage' || opt.location === 'sidebar_card') {
+          this.launchedFromSidebar = true;
+        }
+      };
+      if (typeof tt.getLaunchOptionsSync === 'function') {
+        checkLaunch(tt.getLaunchOptionsSync());
+      }
+      tt.onShow?.((res: any) => {
+        checkLaunch(res);
+      });
+    } catch {
+      this.sidebarSupported = false;
     }
   }
 
@@ -528,15 +630,154 @@ export class PlatformSDK {
     }
   }
 
+  public setVibrateEnabled(enabled: boolean): void {
+    this.vibrateEnabled = enabled;
+  }
+
+  public isVibrateEnabled(): boolean {
+    return this.vibrateEnabled;
+  }
+
   public vibrate(style: 'light' | 'medium' | 'heavy'): void {
+    if (!this.vibrateEnabled) return;
+    const nowMs = Date.now();
+    if (nowMs - this.lastVibrateMs < VIBRATE_THROTTLE_MS) return;
+    this.lastVibrateMs = nowMs;
     try {
       if (this.runtime === 'wechat' && typeof wx.vibrateShort === 'function') {
         wx.vibrateShort({ type: style });
       } else if (this.runtime === 'douyin' && typeof tt.vibrateShort === 'function') {
-        tt.vibrateShort({ type: style });
+        tt.vibrateShort();
       }
     } catch {
       // 忽略震动兼容差异
+    }
+  }
+
+  public shareScore(shareTitle: string): Promise<ShareResult> {
+    if (import.meta.env.VITE_TARGET === 'web') {
+      return Promise.resolve({ shared: true, message: '已在浏览器模拟好友战绩分享' });
+    }
+    if (this.runtime === 'wechat' && typeof wx.shareAppMessage === 'function') {
+      try {
+        wx.shareAppMessage({
+          title: shareTitle,
+          imageUrl: 'assets/sprites/bg_road.jpg',
+        });
+        return Promise.resolve({ shared: true, message: '已唤起好友分享' });
+      } catch {
+        return Promise.resolve({ shared: false, message: '当前环境暂不支持分享' });
+      }
+    }
+    if (this.runtime === 'douyin' && typeof tt.shareAppMessage === 'function') {
+      return new Promise((resolve) => {
+        try {
+          tt.shareAppMessage({
+            title: shareTitle,
+            imageUrl: 'assets/sprites/bg_road.jpg',
+            success: () => resolve({ shared: true, message: '分享战绩成功' }),
+            fail: () => resolve({ shared: false, message: '分享已取消或暂不支持' }),
+          });
+        } catch {
+          resolve({ shared: false, message: '当前环境暂不支持分享' });
+        }
+      });
+    }
+    return Promise.resolve({ shared: false, message: '当前环境暂不支持分享' });
+  }
+
+  public startBattleRecording(): void {
+    this.lastVideoPath = '';
+    this.lastVideoDurationSec = 0;
+    this.recordStartMs = Date.now();
+    this.recordingActive = true;
+    if (this.runtime === 'douyin' && this.ttRecorder) {
+      try {
+        this.ttRecorder.start({ duration: 60 });
+      } catch {
+        this.recordingActive = false;
+      }
+    }
+  }
+
+  public stopBattleRecording(): void {
+    if (!this.recordingActive) return;
+    this.recordingActive = false;
+    if (this.runtime === 'douyin' && this.ttRecorder) {
+      try {
+        this.ttRecorder.stop();
+      } catch {
+        // 忽略停止录屏异常
+      }
+      return;
+    }
+    if (import.meta.env.VITE_TARGET === 'web' && this.recordStartMs > 0) {
+      const sec = (Date.now() - this.recordStartMs) / 1000;
+      this.lastVideoDurationSec = Math.max(0, sec);
+      this.lastVideoPath = sec >= 3 ? 'web_mock_highlight.mp4' : '';
+    }
+  }
+
+  public getRecorderSnapshot(): RecorderSnapshot {
+    const hasVideo = Boolean(this.lastVideoPath) && this.lastVideoDurationSec >= 3;
+    this.recorderSnapCache.hasVideo = hasVideo;
+    this.recorderSnapCache.durationSec = this.lastVideoDurationSec;
+    return this.recorderSnapCache;
+  }
+
+  public shareRecordedVideo(shareTitle: string): Promise<ShareResult> {
+    const snap = this.getRecorderSnapshot();
+    if (!snap.hasVideo) {
+      return Promise.resolve({ shared: false, message: '战斗满三秒才可生成高光视频' });
+    }
+    if (import.meta.env.VITE_TARGET === 'web') {
+      return Promise.resolve({ shared: true, message: '已在浏览器模拟发布高光视频' });
+    }
+    if (this.runtime === 'douyin' && typeof tt.shareAppMessage === 'function') {
+      return new Promise((resolve) => {
+        try {
+          tt.shareAppMessage({
+            channel: 'video',
+            title: shareTitle,
+            extra: {
+              videoPath: this.lastVideoPath,
+              videoTopics: ['末日枪手突围', '休闲射击小游戏'],
+            },
+            success: () => resolve({ shared: true, message: '高光视频发布成功' }),
+            fail: () => resolve({ shared: false, message: '视频分享已取消或暂不支持' }),
+          });
+        } catch {
+          resolve({ shared: false, message: '当前环境暂不支持发布视频' });
+        }
+      });
+    }
+    return Promise.resolve({ shared: false, message: '当前平台不支持高光录屏发布' });
+  }
+
+  public getSidebarStatus(): SidebarStatus {
+    if (import.meta.env.VITE_TARGET === 'web') {
+      const isDouyin = this.getEffectiveAdPlatform() === 'douyin';
+      this.sidebarStatusCache.supported = isDouyin;
+      this.sidebarStatusCache.fromSidebar =
+        isDouyin && Boolean(this.webBridge?.isSimulatedSidebarLaunch?.());
+      return this.sidebarStatusCache;
+    }
+    this.sidebarStatusCache.supported = this.runtime === 'douyin' && this.sidebarSupported;
+    this.sidebarStatusCache.fromSidebar = this.runtime === 'douyin' && this.launchedFromSidebar;
+    return this.sidebarStatusCache;
+  }
+
+  public navigateToSidebar(): void {
+    if (this.runtime === 'douyin' && typeof tt.navigateToScene === 'function') {
+      try {
+        tt.navigateToScene({
+          scene: 'sidebar',
+          success: () => {},
+          fail: () => {},
+        });
+      } catch {
+        // 忽略跳转差异
+      }
     }
   }
 
