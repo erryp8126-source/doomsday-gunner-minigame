@@ -23,7 +23,16 @@ const EXPECTED_SPRITES = [
   'zombie_boss.png',
 ];
 
-// 1. 验证 dist-wx/ 与 dist-tt/ 产物目录、JSON 与全部 11 张素材完整性
+const EXPECTED_AUDIOS = [
+  'shot.wav',
+  'shotgun.wav',
+  'break.wav',
+  'explosion.wav',
+  'crit.wav',
+  'gate.wav',
+];
+
+// 1. 验证 dist-wx/ 与 dist-tt/ 产物目录、JSON 与全部 11 张素材 + 6 个音效完整性
 const requiredFiles = {
   'dist-wx': ['game.js', 'game.json', 'project.config.json', 'game-bundle.js'],
   'dist-tt': ['game.js', 'game.json', 'project.tt.json', 'game-bundle.js'],
@@ -46,8 +55,20 @@ for (const [dir, files] of Object.entries(requiredFiles)) {
     assert.ok(existsSync(spPath), `缺少小游戏素材: ${dir}/assets/sprites/${sp}`);
     assert.ok(statSync(spPath).size > 1024, `素材文件过小异常: ${dir}/assets/sprites/${sp}`);
   }
+
+  let audioTotalBytes = 0;
+  for (const au of EXPECTED_AUDIOS) {
+    const auPath = resolve(rootDir, dir, 'assets/audio', au);
+    assert.ok(existsSync(auPath), `缺少小游戏音效: ${dir}/assets/audio/${au}`);
+    const buf = readFileSync(auPath);
+    assert.equal(buf.toString('ascii', 0, 4), 'RIFF', `无效 WAV RIFF 头: ${dir}/assets/audio/${au}`);
+    assert.equal(buf.toString('ascii', 8, 12), 'WAVE', `无效 WAV WAVE 头: ${dir}/assets/audio/${au}`);
+    assert.ok(buf.length < 15 * 1024, `单个音效体积超 15KB: ${dir}/assets/audio/${au} (${buf.length}B)`);
+    audioTotalBytes += buf.length;
+  }
+  assert.ok(audioTotalBytes < 80 * 1024, `${dir} 音频总计超 80KB: ${audioTotalBytes}B`);
 }
-console.log('   ✓ 双端工程目录结构、配置文件与全部 11 张精绘素材完整性检查通过');
+console.log('   ✓ 双端工程目录结构、配置文件、11 张精绘素材与 6 个 WAV 音效完整性检查通过');
 
 // 2. 验证零 DOM 与调试台残留
 const forbiddenBundleTokens = [

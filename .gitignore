@@ -1,6 +1,8 @@
-# 依赖与构建临时产物
+# 依赖与构建产物
 node_modules/
 dist/
+dist-wx/
+dist-tt/
 dist-minigame-tmp/
 
 # 日志与系统文件

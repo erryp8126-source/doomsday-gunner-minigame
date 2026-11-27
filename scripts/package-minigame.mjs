@@ -7,6 +7,7 @@ const rootDir = resolve(__dirname, '..');
 const tmpDir = resolve(rootDir, 'dist-minigame-tmp');
 const bundlePath = resolve(tmpDir, 'game-bundle.js');
 const spritesSrcDir = resolve(rootDir, 'public/assets/sprites');
+const audioSrcDir = resolve(rootDir, 'public/assets/audio');
 
 if (!existsSync(bundlePath)) {
   console.error('❌ 未找到编译产物 dist-minigame-tmp/game-bundle.js');
@@ -50,6 +51,9 @@ for (const t of targets) {
   cpSync(t.tplDir, t.outDir, { recursive: true });
   copyFileSync(bundlePath, resolve(t.outDir, 'game-bundle.js'));
   cpSync(spritesSrcDir, resolve(t.outDir, 'assets/sprites'), { recursive: true });
+  if (existsSync(audioSrcDir)) {
+    cpSync(audioSrcDir, resolve(t.outDir, 'assets/audio'), { recursive: true });
+  }
 }
 
 const scriptSizeKB = statSync(bundlePath).size / 1024;
@@ -57,12 +61,22 @@ let spriteBytes = 0;
 for (const file of readdirSync(spritesSrcDir)) {
   spriteBytes += statSync(resolve(spritesSrcDir, file)).size;
 }
-const totalSizeKB = scriptSizeKB + spriteBytes / 1024;
+let audioBytes = 0;
+let audioCount = 0;
+if (existsSync(audioSrcDir)) {
+  const audioFiles = readdirSync(audioSrcDir);
+  audioCount = audioFiles.length;
+  for (const file of audioFiles) {
+    audioBytes += statSync(resolve(audioSrcDir, file)).size;
+  }
+}
+const totalSizeKB = scriptSizeKB + (spriteBytes + audioBytes) / 1024;
 rmSync(tmpDir, { recursive: true, force: true });
 
 console.log('✅ 双端小游戏打包完成（零 DOM / 调试台残留校验通过）');
 console.log(`   - 核心脚本体积: ${scriptSizeKB.toFixed(2)} KB`);
 console.log(`   - 精绘素材体积: ${(spriteBytes / 1024).toFixed(2)} KB（11 张）`);
+console.log(`   - 轻量音效体积: ${(audioBytes / 1024).toFixed(2)} KB（${audioCount} 个）`);
 console.log(`   - 单包总计体积: ${totalSizeKB.toFixed(2)} KB（远低于 4096 KB 首包上限）`);
 console.log('   - 微信开发者工具导入目录: dist-wx/');
 console.log('   - 抖音开发者工具导入目录: dist-tt/');

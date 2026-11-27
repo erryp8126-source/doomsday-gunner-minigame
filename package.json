@@ -7,9 +7,10 @@
   "sideEffects": false,
   "scripts": {
     "dev": "vite --port 5175",
+    "gen:audio": "node scripts/generate-audio.mjs",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit && vite build",
-    "build:minigame": "tsc --noEmit && vite build --config vite.minigame.config.ts && node scripts/package-minigame.mjs",
+    "build:minigame": "node scripts/generate-audio.mjs && tsc --noEmit && vite build --config vite.minigame.config.ts && node scripts/package-minigame.mjs",
     "audit": "node scripts/audit-compliance.mjs",
     "preview": "vite preview --port 4175"
   },

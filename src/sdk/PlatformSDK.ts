@@ -64,6 +64,34 @@ export interface WebSimulatorBridge {
   showInterstitial: (sceneLabel: string) => Promise<InterstitialAdResult>;
 }
 
+export type AudioBucketKey = 'shot' | 'shotgun' | 'break' | 'explosion' | 'crit' | 'gate';
+
+interface AudioBucketState {
+  instances: any[];
+  cursor: number;
+  lastPlayedMs: number;
+}
+
+const SOUND_TO_BUCKET: Record<SoundEffectName, { key: AudioBucketKey; src: string; volume: number }> = {
+  pistol: { key: 'shot', src: 'assets/audio/shot.wav', volume: 0.45 },
+  gatling: { key: 'shot', src: 'assets/audio/shot.wav', volume: 0.36 },
+  shotgun: { key: 'shotgun', src: 'assets/audio/shotgun.wav', volume: 0.62 },
+  rocket: { key: 'shotgun', src: 'assets/audio/shotgun.wav', volume: 0.65 },
+  break_barrel: { key: 'break', src: 'assets/audio/break.wav', volume: 0.65 },
+  explosion: { key: 'explosion', src: 'assets/audio/explosion.wav', volume: 0.78 },
+  boss_alert: { key: 'explosion', src: 'assets/audio/explosion.wav', volume: 0.7 },
+  defeat: { key: 'explosion', src: 'assets/audio/explosion.wav', volume: 0.65 },
+  crit: { key: 'crit', src: 'assets/audio/crit.wav', volume: 0.58 },
+  victory: { key: 'crit', src: 'assets/audio/crit.wav', volume: 0.72 },
+  click: { key: 'crit', src: 'assets/audio/crit.wav', volume: 0.42 },
+  gate_pos: { key: 'gate', src: 'assets/audio/gate.wav', volume: 0.62 },
+  gate_neg: { key: 'gate', src: 'assets/audio/gate.wav', volume: 0.52 },
+  hit: { key: 'gate', src: 'assets/audio/gate.wav', volume: 0.55 },
+};
+
+const AUDIO_POOL_SIZE_PER_BUCKET = 3;
+const AUDIO_THROTTLE_MS = 50;
+
 export type SoundPlayerFn = (name: SoundEffectName, pitchOffset?: number) => void;
 export type AudioStateFn = (suspended: boolean) => void;
 
@@ -90,8 +118,9 @@ export class PlatformSDK {
   private bannerAd: any = null;
   private interstitialAd: any = null;
 
-  /** 小游戏端 InnerAudioContext 池占位（后续放入本地音频路径即可直接复用） */
+  /** 小游戏端 InnerAudioContext 实例池（按音效桶各复用 3 个实例并做 50ms 节流） */
   private readonly minigameAudioPool: any[] = [];
+  private readonly minigameAudioBuckets = new Map<AudioBucketKey, AudioBucketState>();
   private readonly memoryStorage = new Map<string, string>();
 
   constructor() {
@@ -552,16 +581,53 @@ export class PlatformSDK {
       this.webSoundPlayer?.(name, pitchOffset);
       return;
     }
-    // 小游戏端预留 InnerAudioContext 复用接口（加入 assets/sfx/*.mp3 后可在此直接映射 src 播放）
     this.playMinigameInnerAudio(name);
   }
 
-  private playMinigameInnerAudio(_name: SoundEffectName): void {
-    // 为保持零外部资源首包极小，当前不绑定远程或本地 mp3 文件。
-    // 如需接入真实音效文件，取消下方注释并提供对应本地路径即可：
-    // const api = this.runtime === 'douyin' ? tt : wx;
-    // if (typeof api?.createInnerAudioContext !== 'function') return;
-    // const audio = api.createInnerAudioContext(); ...
+  private playMinigameInnerAudio(name: SoundEffectName): void {
+    const api = this.runtime === 'douyin' ? tt : this.runtime === 'wechat' ? wx : null;
+    if (!api || typeof api.createInnerAudioContext !== 'function') return;
+
+    const spec = SOUND_TO_BUCKET[name];
+    if (!spec) return;
+
+    let bucket = this.minigameAudioBuckets.get(spec.key);
+    if (!bucket) {
+      bucket = { instances: [], cursor: 0, lastPlayedMs: 0 };
+      this.minigameAudioBuckets.set(spec.key, bucket);
+    }
+
+    const nowMs = Date.now();
+    if (nowMs - bucket.lastPlayedMs < AUDIO_THROTTLE_MS) {
+      return;
+    }
+    bucket.lastPlayedMs = nowMs;
+
+    let ctx: any;
+    if (bucket.instances.length < AUDIO_POOL_SIZE_PER_BUCKET) {
+      ctx = api.createInnerAudioContext();
+      ctx.src = spec.src;
+      ctx.obeyMuteSwitch = true;
+      ctx.onError?.(() => {});
+      bucket.instances.push(ctx);
+      this.minigameAudioPool.push(ctx);
+    } else {
+      ctx = bucket.instances[bucket.cursor % bucket.instances.length];
+      bucket.cursor = (bucket.cursor + 1) % bucket.instances.length;
+    }
+
+    try {
+      ctx.volume = spec.volume;
+      if (typeof ctx.stop === 'function') {
+        ctx.stop();
+      }
+      if (typeof ctx.seek === 'function') {
+        ctx.seek(0);
+      }
+      ctx.play();
+    } catch {
+      // 忽略真机音频异常
+    }
   }
 
   private initWeChatRewardedAd(): void {
