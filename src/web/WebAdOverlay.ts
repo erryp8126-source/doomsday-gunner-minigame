@@ -50,6 +50,12 @@ export function mountWebAdOverlay(
   `;
   phoneFrame.appendChild(bannerEl);
 
+  // 1.5 微信/抖音右上角系统胶囊占位模拟（用于验证安全区避让效果）
+  const capsuleEl = document.createElement('div');
+  capsuleEl.className = 'sim-capsule-mock hidden';
+  capsuleEl.innerHTML = '<span>•••</span><i class="sim-capsule-divider"></i><span>◎</span>';
+  phoneFrame.appendChild(capsuleEl);
+
   // 2. 全屏激励视频 / 插屏模拟器弹窗
   const modalEl = document.createElement('div');
   modalEl.className = 'sim-ad-modal hidden';
@@ -107,6 +113,10 @@ export function mountWebAdOverlay(
         <input id="iaa-sidebar-toggle" type="checkbox" />
       </div>
       <div class="iaa-row">
+        <label for="iaa-capsule-toggle">模拟小游戏顶部胶囊占位</label>
+        <input id="iaa-capsule-toggle" type="checkbox" />
+      </div>
+      <div class="iaa-row">
         <label for="iaa-perf-toggle">实时性能监控 (FPS / 实体)</label>
         <input id="iaa-perf-toggle" type="checkbox" checked />
       </div>
@@ -125,6 +135,7 @@ export function mountWebAdOverlay(
   const platBtns = Array.from(debugEl.querySelectorAll('button[data-plat]')) as HTMLButtonElement[];
   const failCheckbox = debugEl.querySelector('#iaa-fail-toggle') as HTMLInputElement;
   const sidebarCheckbox = debugEl.querySelector('#iaa-sidebar-toggle') as HTMLInputElement;
+  const capsuleCheckbox = debugEl.querySelector('#iaa-capsule-toggle') as HTMLInputElement;
   const perfCheckbox = debugEl.querySelector('#iaa-perf-toggle') as HTMLInputElement;
   const perfCard = debugEl.querySelector('[data-role="perf-card"]') as HTMLElement;
   const cooldownCard = debugEl.querySelector('[data-role="cooldown-card"]') as HTMLElement;
@@ -153,6 +164,10 @@ export function mountWebAdOverlay(
     if (sidebarCheckbox.checked) {
       adManager.setSimulatedPlatform('douyin');
     }
+  });
+
+  capsuleCheckbox.addEventListener('change', () => {
+    capsuleEl.classList.toggle('hidden', !capsuleCheckbox.checked);
   });
 
   unlockAllBtn.addEventListener('click', () => {
@@ -244,6 +259,7 @@ export function mountWebAdOverlay(
     getSimulatedPlatform: () => adManager.getSimulatedPlatform(),
     shouldForceFail: () => adManager.isForceFail(),
     isSimulatedSidebarLaunch: () => sidebarCheckbox.checked,
+    isSimulatedCapsuleEnabled: () => capsuleCheckbox.checked,
     showBanner: () => {
       bannerEl.classList.remove('hidden');
       refreshDebugPanel();

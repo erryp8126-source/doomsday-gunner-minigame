@@ -7,7 +7,7 @@ export const LOGICAL_HEIGHT = 1280;
 export const ROAD_LEFT = 192;
 export const ROAD_RIGHT = 528;
 export const ROAD_W = ROAD_RIGHT - ROAD_LEFT;
-export const PLAYER_Y = 1045;
+export const PLAYER_Y = 980;
 
 /** 底部 Banner 安全区（严格防止按钮误触） */
 export const BANNER_ZONE_TOP = 1145;
@@ -260,6 +260,15 @@ export interface ToastMessage {
   color: string;
   timer: number;
   duration: number;
+}
+
+export interface WeaponBannerState {
+  active: boolean;
+  timer: number;
+  duration: number;
+  weaponName: string;
+  iconKey: SpriteKey | '';
+  accentColor: string;
 }
 
 export function clamp(val: number, min: number, max: number): number {

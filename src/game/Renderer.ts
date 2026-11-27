@@ -19,6 +19,8 @@ import {
   LOGICAL_HEIGHT,
   LOGICAL_WIDTH,
   PLAYER_Y,
+  ROAD_LEFT,
+  ROAD_RIGHT,
   type AirdropCrate,
   type Barrel,
   type BossCombatState,
@@ -33,6 +35,7 @@ import {
   type SaveData,
   type SkinDef,
   type ToastMessage,
+  type WeaponBannerState,
   type WeaponDef,
   type Zombie,
 } from './types';
@@ -61,6 +64,9 @@ export interface RenderSnapshot {
   weapon: WeaponDef;
   doubleFireTimer: number;
   invincibleTimer: number;
+  resumeGraceTimer: number;
+  weaponBanner: WeaponBannerState;
+  hasArmoryRedDot: boolean;
   skin: SkinDef;
   level: LevelConfig;
   elapsed: number;
@@ -349,8 +355,17 @@ export class Renderer {
 
     ctx.restore();
 
-    if (snap.damageVignette > 0.01) {
-      ctx.globalAlpha = Math.min(0.65, snap.damageVignette);
+    if (snap.state === 'PLAYING') {
+      this.renderThumbRail(snap);
+    }
+
+    const lowHpAlpha =
+      snap.state === 'PLAYING' && snap.squadCount > 0 && snap.squadCount <= 2
+        ? 0.18 + 0.15 * (1 + Math.sin(snap.clock * 6))
+        : 0;
+    const vignetteAlpha = Math.max(Math.min(0.65, snap.damageVignette), lowHpAlpha);
+    if (vignetteAlpha > 0.01) {
+      ctx.globalAlpha = vignetteAlpha;
       ctx.fillStyle = this.damageVignetteGrad;
       ctx.fillRect(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT);
       ctx.globalAlpha = 1;
@@ -359,6 +374,38 @@ export class Renderer {
     if (snap.toast) {
       this.renderToast(snap.toast, snap.safeTop);
     }
+  }
+
+  private renderThumbRail(snap: RenderSnapshot): void {
+    const ctx = this.ctx;
+    const trackX = 128;
+    const trackW = LOGICAL_WIDTH - 256;
+    const trackY = 1196;
+    const trackH = 10;
+    const minX = ROAD_LEFT + 30;
+    const maxX = ROAD_RIGHT - 30;
+    const t = Math.max(0, Math.min(1, (snap.squadX - minX) / Math.max(1, maxX - minX)));
+    const knobW = 52;
+    const knobX = trackX + (trackW - knobW) * t;
+
+    ctx.save();
+    drawRoundedRect(ctx, trackX, trackY, trackW, trackH, 5);
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.11)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    drawRoundedRect(ctx, knobX, trackY - 2, knobW, trackH + 4, 7);
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.26)';
+    ctx.fill();
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = `700 17px ${FONT_FAMILY}`;
+    ctx.fillStyle = 'rgba(226, 232, 240, 0.36)';
+    ctx.fillText('单指左右滑动操控', LOGICAL_WIDTH / 2, 1232);
+    ctx.restore();
   }
 
   private renderRoad(roadScroll: number): void {
@@ -1085,7 +1132,7 @@ export class Renderer {
 
   private renderHUD(snap: RenderSnapshot, actions: RenderActions): void {
     const ctx = this.ctx;
-    const top = Math.max(20, snap.safeTop + 6);
+    const top = Math.max(22, snap.safeTop);
 
     ctx.save();
     drawRoundedRect(ctx, 18, top, LOGICAL_WIDTH - 196, 92, 18);
@@ -1183,7 +1230,7 @@ export class Renderer {
     if (snap.bossRef && snap.bossRef.active && !snap.bossRef.dying) {
       ctx.save();
       const bs = snap.bossState;
-      const bossBarY = top + 106;
+      const bossBarY = top + 104;
       const barW = LOGICAL_WIDTH - 148;
       drawRoundedRect(ctx, 74, bossBarY, barW, 34, 12);
       ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
@@ -1231,7 +1278,7 @@ export class Renderer {
     // 登场 1.5 秒红色闪烁警戒横幅
     if (snap.bossState.alertPending && snap.bossState.alertTimer > 0) {
       const pulse = Math.abs(Math.sin(snap.clock * 16));
-      const bannerY = 330;
+      const bannerY = Math.max(330, top + 210);
       const bannerH = 114;
       ctx.save();
       ctx.fillStyle = `rgba(185, 28, 28, ${(0.58 + 0.3 * pulse).toFixed(2)})`;
@@ -1253,7 +1300,7 @@ export class Renderer {
     // 实时连击 ×N 徽章
     if (snap.combo >= 2) {
       ctx.save();
-      ctx.translate(LOGICAL_WIDTH - 108, top + 206);
+      ctx.translate(LOGICAL_WIDTH - 108, top + 224);
       ctx.scale(snap.comboPulse, snap.comboPulse);
       drawRoundedRect(ctx, -88, -38, 176, 76, 16);
       ctx.fillStyle = snap.combo >= 25 ? 'rgba(220, 38, 38, 0.86)' : 'rgba(217, 119, 6, 0.86)';
@@ -1276,8 +1323,13 @@ export class Renderer {
       ctx.restore();
     }
 
-    // 火力翻倍提示条 & 超级空投快捷键
-    let subY = top + 148;
+    // 切枪高光横幅、火力翻倍提示条 & 超级空投快捷键
+    let subY =
+      snap.bossRef && snap.bossRef.active && !snap.bossRef.dying ? top + 148 : top + 104;
+    if (snap.weaponBanner.active) {
+      this.renderWeaponBanner(snap, subY);
+      subY += 72;
+    }
     if (snap.doubleFireTimer > 0) {
       ctx.save();
       ctx.fillStyle = 'rgba(245, 158, 11, 0.92)';
@@ -1299,7 +1351,7 @@ export class Renderer {
         this.hitBoxes,
         'hud_airdrop_btn',
         LOGICAL_WIDTH - 208,
-        subY + 110,
+        Math.max(subY + 60, top + 258),
         186,
         52,
         '超级空投',
@@ -1307,6 +1359,83 @@ export class Renderer {
         this.hudAirdropBtnStyle,
       );
     }
+
+    if (snap.state === 'PLAYING' && snap.resumeGraceTimer > 0) {
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, snap.resumeGraceTimer * 1.4);
+      drawRoundedRect(ctx, LOGICAL_WIDTH / 2 - 74, PLAYER_Y - 120, 148, 32, 16);
+      ctx.fillStyle = 'rgba(14, 165, 233, 0.88)';
+      ctx.fill();
+      ctx.strokeStyle = '#bae6fd';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#ffffff';
+      ctx.font = `900 17px ${FONT_FAMILY}`;
+      ctx.fillText('恢复保护中', LOGICAL_WIDTH / 2, PLAYER_Y - 104);
+      ctx.restore();
+    }
+  }
+
+  private renderWeaponBanner(snap: RenderSnapshot, baseY: number): void {
+    const wb = snap.weaponBanner;
+    if (!wb.active || wb.duration <= 0) return;
+
+    const ctx = this.ctx;
+    const elapsed = Math.max(0, wb.duration - wb.timer);
+    const slideIn = Math.min(1, elapsed / 0.18);
+    const easedIn = 1 - (1 - slideIn) * (1 - slideIn);
+    const alpha = wb.timer < 0.22 ? Math.max(0, wb.timer / 0.22) : easedIn;
+
+    const bannerW = 480;
+    const bannerH = 62;
+    const targetX = (LOGICAL_WIDTH - bannerW) * 0.5;
+    const drawX = targetX - (1 - easedIn) * 180;
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    drawRoundedRect(ctx, drawX, baseY, bannerW, bannerH, 18);
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
+    ctx.fill();
+    ctx.strokeStyle = wb.accentColor;
+    ctx.lineWidth = 3;
+    ctx.stroke();
+
+    const icon = wb.iconKey ? this.assets.sprites[wb.iconKey] : undefined;
+    if (icon) {
+      ctx.drawImage(icon, drawX + 18, baseY + 8, 46, 46);
+    }
+
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.font = `900 26px ${FONT_FAMILY}`;
+    const label = `火力升级：${wb.weaponName}！`;
+    ctx.fillStyle = '#0f172a';
+    ctx.fillText(label, drawX + 78 + 2, baseY + bannerH * 0.5 + 2);
+    ctx.fillStyle = '#fef08a';
+    ctx.fillText(label, drawX + 78, baseY + bannerH * 0.5);
+    ctx.restore();
+  }
+
+  private drawRedDot(x: number, y: number, clock: number): void {
+    const ctx = this.ctx;
+    const pulse = Math.sin(clock * 7);
+    const r = 8 + pulse * 1.5;
+    ctx.save();
+    ctx.fillStyle = 'rgba(239, 68, 68, 0.34)';
+    ctx.beginPath();
+    ctx.arc(x, y, r + 4.5, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = '#ef4444';
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.restore();
   }
 
   private drawMenuUpgradeCard(
@@ -1321,6 +1450,7 @@ export class Renderer {
     isMax: boolean,
     onClick: () => void,
     disableInteraction: boolean,
+    clock: number,
   ): void {
     const ctx = this.ctx;
     ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
@@ -1352,6 +1482,9 @@ export class Renderer {
         onClick,
         canBuy && !isMax ? this.upgradeBuyStyle : this.upgradeDisabledStyle,
       );
+      if (canBuy && !isMax) {
+        this.drawRedDot(cx + cardW - 10, cy + 10, clock);
+      }
     }
   }
 
@@ -1361,7 +1494,7 @@ export class Renderer {
     disableInteraction = false,
   ): void {
     const ctx = this.ctx;
-    const top = Math.max(20, snap.safeTop + 10);
+    const top = Math.max(22, snap.safeTop);
 
     ctx.save();
     ctx.fillStyle = this.menuOverlayGrad;
@@ -1401,6 +1534,9 @@ export class Renderer {
           radius: 15,
         },
       );
+      if (snap.hasArmoryRedDot) {
+        this.drawRedDot(394 + 100, top + 4, snap.clock);
+      }
 
       drawButton(
         ctx,
@@ -1480,9 +1616,9 @@ export class Renderer {
           ctx,
           this.hitBoxes,
           'menu_sidebar_gift',
-          LOGICAL_WIDTH - 196,
+          LOGICAL_WIDTH - 186,
           top + 56,
-          174,
+          164,
           50,
           '侧边栏复访礼',
           actions.onClickSidebarGift,
@@ -1497,25 +1633,42 @@ export class Renderer {
             disabled: !snap.canClaimSidebarReward,
           },
         );
+        if (snap.canClaimSidebarReward) {
+          this.drawRedDot(LOGICAL_WIDTH - 24, top + 60, snap.clock);
+        }
       }
     }
+
+    const titleFontSize = top > 70 ? 52 : 68;
+    const titleY = Math.max(162, top + 84);
+    const levelY = Math.max(206, top + 124);
+    const levelBottom = levelY + 48;
+    const bossAvailH = Math.max(132, 494 - levelBottom);
+    const bossSize = Math.min(220, Math.round(bossAvailH - 8));
+    const bossY = levelBottom + Math.round((bossAvailH - bossSize) * 0.5);
 
     // 2D 精绘熔岩尸王展示
     if (this.assets.sprites.boss) {
       const bob = Math.sin(snap.clock * 3) * 8;
-      ctx.drawImage(this.assets.sprites.boss, LOGICAL_WIDTH / 2 - 110, 268 + bob, 220, 220);
+      ctx.drawImage(
+        this.assets.sprites.boss,
+        LOGICAL_WIDTH / 2 - bossSize * 0.5,
+        bossY + bob,
+        bossSize,
+        bossSize,
+      );
     }
 
     // 主菜单标题描边改用偏移深色 fillText 加速
     ctx.textAlign = 'center';
-    ctx.font = `900 68px ${FONT_FAMILY}`;
+    ctx.font = `900 ${titleFontSize}px ${FONT_FAMILY}`;
     ctx.fillStyle = '#1e1004';
-    ctx.fillText('末日枪手突围', LOGICAL_WIDTH / 2 + 3, 165);
+    ctx.fillText('末日枪手突围', LOGICAL_WIDTH / 2 + 3, titleY + 3);
     ctx.fillStyle = '#fbbf24';
-    ctx.fillText('末日枪手突围', LOGICAL_WIDTH / 2, 162);
+    ctx.fillText('末日枪手突围', LOGICAL_WIDTH / 2, titleY);
 
     // 关卡切换铭牌
-    drawRoundedRect(ctx, 130, 206, LOGICAL_WIDTH - 260, 46, 23);
+    drawRoundedRect(ctx, 130, levelY, LOGICAL_WIDTH - 260, 46, 23);
     ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
     ctx.fill();
     ctx.lineWidth = 2;
@@ -1526,7 +1679,7 @@ export class Renderer {
     ctx.fillText(
       `第${snap.level.id}关·${snap.level.name}（已解锁 ${snap.save.unlockedLevel} 关）`,
       LOGICAL_WIDTH / 2,
-      230,
+      levelY + 24,
     );
 
     if (!disableInteraction) {
@@ -1535,7 +1688,7 @@ export class Renderer {
         this.hitBoxes,
         'menu_prev_lvl',
         56,
-        205,
+        levelY - 1,
         64,
         48,
         '上关',
@@ -1553,7 +1706,7 @@ export class Renderer {
         this.hitBoxes,
         'menu_next_lvl',
         LOGICAL_WIDTH - 120,
-        205,
+        levelY - 1,
         64,
         48,
         '下关',
@@ -1593,6 +1746,7 @@ export class Renderer {
       snap.save.attackLevel >= 20,
       actions.onUpgradeAttack,
       disableInteraction,
+      snap.clock,
     );
     this.drawMenuUpgradeCard(
       startX + cardW + gap,
@@ -1606,6 +1760,7 @@ export class Renderer {
       snap.save.fireRateLevel >= 20,
       actions.onUpgradeFireRate,
       disableInteraction,
+      snap.clock,
     );
     this.drawMenuUpgradeCard(
       startX + (cardW + gap) * 2,
@@ -1619,6 +1774,7 @@ export class Renderer {
       snap.save.squadLevel >= 6,
       actions.onUpgradeSquad,
       disableInteraction,
+      snap.clock,
     );
 
     // 主菜单核心开局按钮区（底边最高 958 <= 1095，完整避让健康忠告与底部 Banner 安全区）
@@ -1711,7 +1867,7 @@ export class Renderer {
   private renderSwipeTutorial(snap: RenderSnapshot): void {
     const ctx = this.ctx;
     const cx = Math.max(210, Math.min(LOGICAL_WIDTH - 210, snap.squadX));
-    const y = PLAYER_Y + 132;
+    const y = PLAYER_Y + 108;
     const offset = Math.sin(snap.clock * 6) * 14;
 
     ctx.save();
@@ -1807,7 +1963,7 @@ export class Renderer {
       434,
       LOGICAL_WIDTH - 280,
       76,
-      '继续突围',
+      '继续战斗',
       actions.onTogglePause,
       {
         fillTop: '#22c55e',
@@ -1861,7 +2017,7 @@ export class Renderer {
       612,
       LOGICAL_WIDTH - 280,
       70,
-      snap.mode === 'endless' ? '重开无尽' : '重新本关',
+      '重新开始',
       actions.onRestartBattle,
       {
         fillTop: '#f59e0b',
@@ -2332,7 +2488,7 @@ export class Renderer {
 
   private renderToast(toast: ToastMessage, safeTop: number): void {
     const ctx = this.ctx;
-    const y = Math.max(96, safeTop + 88);
+    const y = Math.max(96, safeTop + 98);
     ctx.save();
     ctx.font = 'bold 22px "PingFang SC", "Microsoft YaHei", sans-serif';
     const textW = Math.min(620, Math.max(260, ctx.measureText(toast.text).width + 64));

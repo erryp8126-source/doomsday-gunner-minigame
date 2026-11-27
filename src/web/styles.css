@@ -53,6 +53,35 @@ body {
   cursor: grabbing;
 }
 
+/* 顶部系统胶囊模拟占位 */
+.sim-capsule-mock {
+  position: absolute;
+  top: 28px;
+  right: 10px;
+  width: 84px;
+  height: 30px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  color: #f8fafc;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-evenly;
+  pointer-events: none;
+  z-index: 25;
+}
+
+.sim-capsule-mock.hidden {
+  display: none;
+}
+
+.sim-capsule-divider {
+  width: 1px;
+  height: 14px;
+  background: rgba(255, 255, 255, 0.3);
+}
+
 /* 底部安全区 Banner 模拟器 */
 .sim-banner {
   position: absolute;

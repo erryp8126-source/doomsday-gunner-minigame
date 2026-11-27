@@ -1,6 +1,6 @@
 import { AD_RULES } from '../config/adConfig';
 import { LEVELS, getEndlessWaveConfig, getLevelConfig } from '../config/levels';
-import { WEAPONS, getSkinDef } from '../config/weapons';
+import { SKINS, WEAPONS, getSkinDef } from '../config/weapons';
 import type { PlatformSDK } from '../sdk/PlatformSDK';
 import { AssetLoader } from './AssetLoader';
 import { ObjectPool } from './ObjectPool';
@@ -27,6 +27,7 @@ import {
   type Particle,
   type SkinDef,
   type ToastMessage,
+  type WeaponBannerState,
   type WeaponId,
   type Zombie,
   type ZombieKind,
@@ -177,6 +178,15 @@ export class GameEngine {
   private fireRateBonus = 1;
   private doubleFireTimer = 0;
   private invincibleTimer = 0;
+  private resumeGraceTimer = 0;
+  private readonly weaponBanner: WeaponBannerState = {
+    active: false,
+    timer: 0,
+    duration: 1.2,
+    weaponName: '',
+    iconKey: '',
+    accentColor: '#38bdf8',
+  };
 
   private fireCd = 0;
   private recoil = 0;
@@ -445,6 +455,9 @@ export class GameEngine {
       weapon: WEAPONS[this.weaponId],
       doubleFireTimer: this.doubleFireTimer,
       invincibleTimer: this.invincibleTimer,
+      resumeGraceTimer: this.resumeGraceTimer,
+      weaponBanner: this.weaponBanner,
+      hasArmoryRedDot: false,
       skin: getSkinDef(initSave.equippedSkin),
       level: initLevel,
       elapsed: this.elapsed,
@@ -507,13 +520,28 @@ export class GameEngine {
         this.currentLevel = getLevelConfig(this.saveManager.getData().selectedLevel);
       },
       onUpgradeAttack: () => {
-        if (this.saveManager.upgrade('attack')) this.showToast('基础攻击已提升', '#4ade80');
+        if (this.saveManager.upgrade('attack')) {
+          const cur = this.saveManager.getData().attackLevel;
+          this.sdk.playSound('gate_pos');
+          this.sdk.vibrate('light');
+          this.showToast(`基础攻击 +12%（当前 ${cur} 级）`, '#4ade80');
+        }
       },
       onUpgradeFireRate: () => {
-        if (this.saveManager.upgrade('firerate')) this.showToast('初始射速已提升', '#4ade80');
+        if (this.saveManager.upgrade('firerate')) {
+          const cur = this.saveManager.getData().fireRateLevel;
+          this.sdk.playSound('gate_pos');
+          this.sdk.vibrate('light');
+          this.showToast(`初始射速 +8%（当前 ${cur} 级）`, '#4ade80');
+        }
       },
       onUpgradeSquad: () => {
-        if (this.saveManager.upgrade('squad')) this.showToast('初始人数已增加', '#4ade80');
+        if (this.saveManager.upgrade('squad')) {
+          const cur = this.saveManager.getData().squadLevel;
+          this.sdk.playSound('gate_pos');
+          this.sdk.vibrate('light');
+          this.showToast(`初始人数 +1（当前 ${cur} 人）`, '#4ade80');
+        }
       },
       onOpenArmory: () => this.setState('ARMORY'),
       onCloseArmory: () => this.setState('MENU'),
@@ -527,6 +555,7 @@ export class GameEngine {
           this.airdrop.active = false;
           this.airdrop.claimed = true;
           this.weaponId = 'rocket';
+          this.triggerWeaponBanner('rocket');
           this.showToast('已装备高爆火箭筒', '#fb923c');
           this.setState('PLAYING');
         }
@@ -566,6 +595,9 @@ export class GameEngine {
         }
       },
       onRestartBattle: async () => {
+        if (this.state === 'PAUSED') {
+          this.sdk.resumeAudio();
+        }
         if (this.state === 'RESULT' && !this.resultClaimed) {
           this.claimResultCoins(1);
         }
@@ -575,6 +607,9 @@ export class GameEngine {
         this.startGame(this.mode, false);
       },
       onBackToMenu: async () => {
+        if (this.state === 'PAUSED') {
+          this.sdk.resumeAudio();
+        }
         if (this.state === 'RESULT' && !this.resultClaimed) {
           this.claimResultCoins(1);
         }
@@ -586,10 +621,9 @@ export class GameEngine {
       },
       onTogglePause: () => {
         if (this.state === 'PLAYING') {
-          this.stateBeforePause = 'PLAYING';
-          this.setState('PAUSED');
+          this.pauseBattle();
         } else if (this.state === 'PAUSED') {
-          this.setState(this.stateBeforePause);
+          this.resumeBattle();
         }
       },
       onToggleMute: () => {
@@ -697,10 +731,16 @@ export class GameEngine {
       this.sdk.onVisibilityChange(
         () => {
           if (this.state === 'PLAYING') {
-            this.setState('PAUSED');
+            this.pauseBattle();
+          } else {
+            this.sdk.suspendAudio();
           }
         },
-        () => {},
+        () => {
+          if (this.state !== 'PAUSED') {
+            this.sdk.resumeAudio();
+          }
+        },
       ),
     );
 
@@ -909,6 +949,9 @@ export class GameEngine {
     this.fireRateBonus = 1;
     this.doubleFireTimer = 0;
     this.invincibleTimer = 0;
+    this.resumeGraceTimer = 0;
+    this.weaponBanner.active = false;
+    this.weaponBanner.timer = 0;
 
     this.fireCd = 0;
     this.recoil = 0;
@@ -1046,6 +1089,13 @@ export class GameEngine {
     if (this.recoil > 0) this.recoil = Math.max(0, this.recoil - dt * 55);
     if (this.doubleFireTimer > 0) this.doubleFireTimer = Math.max(0, this.doubleFireTimer - dt);
     if (this.invincibleTimer > 0) this.invincibleTimer = Math.max(0, this.invincibleTimer - dt);
+    if (this.resumeGraceTimer > 0) this.resumeGraceTimer = Math.max(0, this.resumeGraceTimer - dt);
+    if (this.weaponBanner.active) {
+      this.weaponBanner.timer = Math.max(0, this.weaponBanner.timer - dt);
+      if (this.weaponBanner.timer <= 0) {
+        this.weaponBanner.active = false;
+      }
+    }
     if (this.hazardHurtCd > 0) this.hazardHurtCd = Math.max(0, this.hazardHurtCd - dt);
     if (this.bossState.shockwaveFlash > 0) {
       this.bossState.shockwaveFlash = Math.max(0, this.bossState.shockwaveFlash - dt);
@@ -1917,6 +1967,7 @@ export class GameEngine {
             this.spawnParticles(br.x, br.y, '#ffe066', 10, 210, 6);
             if (br.rewardType === 'weapon') {
               this.weaponId = br.rewardWeapon;
+              this.triggerWeaponBanner(br.rewardWeapon);
               this.spawnFloatText(br.x, br.y - 25, `装备 ${br.rewardLabel}`, '#38bdf8', 34);
             } else if (br.rewardType === 'squad') {
               this.squadCount = Math.min(36, this.squadCount + br.rewardVal);
@@ -2296,10 +2347,50 @@ export class GameEngine {
     }
   }
 
+  private pauseBattle(): void {
+    if (this.state !== 'PLAYING') return;
+    this.stateBeforePause = 'PLAYING';
+    this.sdk.suspendAudio();
+    this.setState('PAUSED');
+  }
+
+  private resumeBattle(): void {
+    if (this.state !== 'PAUSED') return;
+    this.sdk.resumeAudio();
+    this.lastTimestamp = performance.now();
+    this.resumeGraceTimer = 1.0;
+    this.invincibleTimer = Math.max(this.invincibleTimer, 1.0);
+    this.setState(this.stateBeforePause);
+  }
+
+  private triggerWeaponBanner(weaponId: WeaponId): void {
+    if (weaponId === 'pistol') return;
+    const w = WEAPONS[weaponId];
+    this.weaponBanner.active = true;
+    this.weaponBanner.duration = 1.2;
+    this.weaponBanner.timer = 1.2;
+    this.weaponBanner.weaponName = w.name;
+    this.weaponBanner.iconKey = w.iconKey;
+    this.weaponBanner.accentColor = w.color;
+  }
+
   private render(): void {
     const save = this.saveManager.getData();
     const insets = this.sdk.getLogicalSafeInsets();
     const snap = this.renderSnapshot;
+
+    let hasArmoryRedDot = false;
+    for (let i = 0; i < SKINS.length; i++) {
+      const sk = SKINS[i];
+      if (
+        sk.unlockAds > 0 &&
+        sk.id !== save.equippedSkin &&
+        this.saveManager.isSkinUnlocked(sk.id, sk.unlockAds)
+      ) {
+        hasArmoryRedDot = true;
+        break;
+      }
+    }
 
     snap.renderScale = this.canvasScale;
     snap.mode = this.mode;
@@ -2319,6 +2410,9 @@ export class GameEngine {
     snap.weapon = WEAPONS[this.weaponId];
     snap.doubleFireTimer = this.doubleFireTimer;
     snap.invincibleTimer = this.invincibleTimer;
+    snap.resumeGraceTimer = this.resumeGraceTimer;
+    snap.weaponBanner = this.weaponBanner;
+    snap.hasArmoryRedDot = hasArmoryRedDot;
     snap.skin = getSkinDef(save.equippedSkin);
     snap.level = this.currentLevel;
     snap.elapsed = this.elapsed;

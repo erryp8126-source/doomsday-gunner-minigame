@@ -33,6 +33,7 @@ export interface ViewportInfo {
   pixelRatio: number;
   safeAreaTop: number;
   safeAreaBottom: number;
+  safeTopLogical: number;
 }
 
 export interface InputHandlers {
@@ -74,6 +75,7 @@ export interface WebSimulatorBridge {
   getSimulatedPlatform: () => 'wechat' | 'douyin';
   shouldForceFail: () => boolean;
   isSimulatedSidebarLaunch?: () => boolean;
+  isSimulatedCapsuleEnabled?: () => boolean;
   showRewardedVideo: (scene: RewardedScene, rewardLabel: string) => Promise<RewardedAdResult>;
   showBanner: () => void;
   hideBanner: () => void;
@@ -324,9 +326,34 @@ export class PlatformSDK {
   public getLogicalSafeInsets(): { top: number; bottom: number } {
     const vp = this.viewport;
     const scaleY = LOGICAL_HEIGHT / Math.max(1, vp.height);
-    this.safeInsetsCache.top = Math.round(vp.safeAreaTop * scaleY);
+    if (this.runtime === 'web' && import.meta.env.VITE_TARGET === 'web') {
+      this.safeInsetsCache.top = this.webBridge?.isSimulatedCapsuleEnabled?.() ? 124 : 22;
+    } else {
+      this.safeInsetsCache.top = vp.safeTopLogical;
+    }
     this.safeInsetsCache.bottom = Math.round(vp.safeAreaBottom * scaleY);
     return this.safeInsetsCache;
+  }
+
+  private computeCapsuleSafeTopLogical(api: any, info: any, safeTopPxFallback: number): number {
+    const winH = Math.max(1, info?.windowHeight || 844);
+    const scaleY = LOGICAL_HEIGHT / winH;
+    let menuBottomPx = 0;
+    try {
+      const menuRect =
+        typeof api?.getMenuButtonBoundingClientRect === 'function'
+          ? api.getMenuButtonBoundingClientRect()
+          : null;
+      if (menuRect && typeof menuRect.bottom === 'number' && menuRect.bottom > 0) {
+        menuBottomPx = menuRect.bottom;
+      }
+    } catch {
+      menuBottomPx = 0;
+    }
+    const statusBase =
+      typeof info?.statusBarHeight === 'number' ? info.statusBarHeight : safeTopPxFallback;
+    const safeTopPx = menuBottomPx > 0 ? menuBottomPx + 8 : statusBase + 52;
+    return Math.min(220, Math.round(Math.max(22, safeTopPx * scaleY)));
   }
 
   private queryViewport(): ViewportInfo {
@@ -334,36 +361,42 @@ export class PlatformSDK {
       const info =
         typeof wx.getWindowInfo === 'function' ? wx.getWindowInfo() : wx.getSystemInfoSync();
       const safe = info.safeArea || { top: 0, bottom: info.windowHeight };
+      const safeTopPx = Math.max(0, safe.top || 0);
       return {
         width: info.windowWidth,
         height: info.windowHeight,
         pixelRatio: Math.min(info.pixelRatio || 1, MAX_PIXEL_RATIO),
-        safeAreaTop: Math.max(0, safe.top || 0),
+        safeAreaTop: safeTopPx,
         safeAreaBottom: Math.max(0, info.windowHeight - (safe.bottom || info.windowHeight)),
+        safeTopLogical: this.computeCapsuleSafeTopLogical(wx, info, safeTopPx),
       };
     }
 
     if (this.runtime === 'douyin') {
       const info = tt.getSystemInfoSync();
       const safe = info.safeArea || { top: 0, bottom: info.windowHeight };
+      const safeTopPx = Math.max(0, safe.top || 0);
       return {
         width: info.windowWidth,
         height: info.windowHeight,
         pixelRatio: Math.min(info.pixelRatio || 1, MAX_PIXEL_RATIO),
-        safeAreaTop: Math.max(0, safe.top || 0),
+        safeAreaTop: safeTopPx,
         safeAreaBottom: Math.max(0, info.windowHeight - (safe.bottom || info.windowHeight)),
+        safeTopLogical: this.computeCapsuleSafeTopLogical(tt, info, safeTopPx),
       };
     }
 
     if (import.meta.env.VITE_TARGET === 'web') {
       const parent = this.canvas.parentElement;
       const rect = parent ? parent.getBoundingClientRect() : { width: 390, height: 844 };
+      const simCapsule = this.webBridge?.isSimulatedCapsuleEnabled?.() ?? false;
       return {
         width: Math.max(300, Math.round(rect.width)),
         height: Math.max(500, Math.round(rect.height)),
         pixelRatio: Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO),
         safeAreaTop: 18,
         safeAreaBottom: 14,
+        safeTopLogical: simCapsule ? 124 : 22,
       };
     }
 
@@ -373,6 +406,7 @@ export class PlatformSDK {
       pixelRatio: MAX_PIXEL_RATIO,
       safeAreaTop: 0,
       safeAreaBottom: 0,
+      safeTopLogical: 22,
     };
   }
 
