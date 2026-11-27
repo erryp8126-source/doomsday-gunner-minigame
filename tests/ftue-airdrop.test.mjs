@@ -117,12 +117,12 @@ function createEngineHarness(prepopulateSave) {
   };
 }
 
-test('首局分段引导：按木桶/增益门/尸王依次非打断展示一次并复用结构体', () => {
+test('首局分段引导：按木桶/增益门/尸王依次非打断展示，满 1.2 秒才持久化并复用结构体', () => {
   const { engine, saveManager } = createEngineHarness();
   engine.startGame('campaign', false);
   const bannerRef = engine.guideBanner;
 
-  // 1. 首次生成木桶：触发高亮框 + 3秒指引横幅，绝不暂停战斗
+  // 1. 首次生成木桶：触发高亮框 + 3秒指引横幅，绝不暂停战斗，此时尚未写入已看过
   engine.spawnSingleBarrel(360, -75, 0);
   const barrels = engine.barrelPool.getRawItems().filter((b) => b.active);
   assert.equal(barrels.length, 1);
@@ -132,35 +132,89 @@ test('首局分段引导：按木桶/增益门/尸王依次非打断展示一次
   assert.equal(engine.guideBanner.active, true);
   assert.equal(engine.guideBanner.stage, 'barrel');
   assert.equal(engine.guideBanner.text, '打爆数字木桶，立即换强力武器或加队友！');
-  assert.equal(saveManager.hasSeenGuide('barrel'), true);
+  assert.equal(saveManager.hasSeenGuide('barrel'), false, '刚生成时不得立刻写入持久化已看过');
 
-  // 再次生成木桶不再高亮，也不再覆盖引导
-  engine.guideBanner.active = false;
+  // 展示未满 1.2 秒前仍未持久化；同阶段再刷第二个木桶也不重触发高亮
+  for (let i = 0; i < 16; i++) {
+    engine.update(0.05); // 0.8s < 1.2s
+  }
+  assert.equal(saveManager.hasSeenGuide('barrel'), false, '展示 0.8 秒小于 1.2 秒不应持久化');
   engine.spawnSingleBarrel(360, -75, 1);
   const secondBarrel = engine.barrelPool.getRawItems().filter((b) => b.active)[1];
   assert.equal(secondBarrel.highlightGuide, false);
+
+  // 继续累计到满 1.2 秒 -> 正式持久化；后续再生成木桶不再激活引导
+  for (let i = 0; i < 9; i++) {
+    engine.update(0.05); // 0.8 + 0.45 = 1.25s >= 1.2s
+  }
+  assert.equal(saveManager.hasSeenGuide('barrel'), true, '战斗画面累计展示满 1.2 秒后持久化已看过');
+  engine.guideBanner.active = false;
+  engine.spawnSingleBarrel(360, -75, 2);
   assert.equal(engine.guideBanner.active, false);
 
-  // 2. 首次出现增益门：非打断顶部引导
+  // 2. 首次出现增益门：非打断顶部引导，同样满 1.2 秒后再持久化
   engine.spawnGatePair();
   assert.equal(engine.state, 'PLAYING');
   assert.equal(engine.guideBanner.active, true);
   assert.equal(engine.guideBanner.stage, 'gate');
   assert.equal(engine.guideBanner.text, '射击红色大门可将其打蓝，穿过获得队友或射速加成！');
+  assert.equal(saveManager.hasSeenGuide('gate'), false);
+  for (let i = 0; i < 25; i++) {
+    engine.update(0.05); // 1.25s >= 1.2s
+  }
   assert.equal(saveManager.hasSeenGuide('gate'), true);
 
-  // 3. 首次出现熔岩尸王：非打断顶部引导 + 3秒后淡出结束
+  // 3. 首次出现熔岩尸王：非打断顶部引导 + 满 1.2 秒持久化 + 3秒后淡出结束
   engine.spawnBoss();
   assert.equal(engine.state, 'PLAYING');
   assert.equal(engine.guideBanner.active, true);
   assert.equal(engine.guideBanner.stage, 'boss');
   assert.equal(engine.guideBanner.text, '注意躲避地面红圈和冲锋红道，破盾后全力输出！');
-  assert.equal(saveManager.hasSeenGuide('boss'), true);
+  assert.equal(saveManager.hasSeenGuide('boss'), false);
 
-  for (let i = 0; i < 65; i++) {
-    engine.updatePlaying(0.05);
+  for (let i = 0; i < 25; i++) {
+    engine.update(0.05); // 1.25s
+  }
+  assert.equal(saveManager.hasSeenGuide('boss'), true);
+  assert.equal(engine.guideBanner.active, true);
+
+  for (let i = 0; i < 40; i++) {
+    engine.update(0.05); // 总计 3.25s >= 3.0s
   }
   assert.equal(engine.guideBanner.active, false, '3秒后分段引导自然淡出关闭');
+});
+
+test('分段引导未满 1.2 秒切后台暂停或提前退出时不持久化，重进可再次触发', () => {
+  const { engine, saveManager } = createEngineHarness();
+  engine.startGame('campaign', false);
+
+  engine.spawnSingleBarrel(360, -75, 0);
+  for (let i = 0; i < 12; i++) {
+    engine.update(0.05); // 0.6s < 1.2s
+  }
+  assert.equal(saveManager.hasSeenGuide('barrel'), false);
+
+  // 切后台暂停：停留 2 秒也不累计 PLAYING 可见时长
+  engine.pauseBattle();
+  assert.equal(engine.state, 'PAUSED');
+  for (let i = 0; i < 40; i++) {
+    engine.update(0.05);
+  }
+  assert.equal(saveManager.hasSeenGuide('barrel'), false, '暂停状态不可累计引导可见时长或提前持久化');
+
+  // 模拟退出后重新开局：因之前未展示满 1.2 秒，重进仍可完整再次触发引导
+  engine.startGame('campaign', false);
+  assert.equal(saveManager.hasSeenGuide('barrel'), false);
+  engine.spawnSingleBarrel(360, -75, 0);
+  const retriggeredBarrel = engine.barrelPool.getRawItems().filter((b) => b.active)[0];
+  assert.equal(retriggeredBarrel.highlightGuide, true);
+  assert.equal(engine.guideBanner.active, true);
+  assert.equal(engine.guideBanner.stage, 'barrel');
+
+  for (let i = 0; i < 25; i++) {
+    engine.update(0.05); // 1.25s >= 1.2s
+  }
+  assert.equal(saveManager.hasSeenGuide('barrel'), true, '重进后展示满 1.2 秒才持久化');
 });
 
 test('局内超级空投：开启 8 秒非强制呼吸窗口，绝不强行弹窗，超时自然消失', () => {

@@ -152,6 +152,8 @@ const BARREL_LANE_XS: readonly [number, number, number] = [
   ROAD_LEFT + ROAD_W * 0.76,
 ];
 
+const GUIDE_PERSIST_VISIBLE_SEC = 1.2;
+
 /**
  * 《末日枪手突围》2D 精绘核心引擎（对齐原型手感 + 全对象池 + 5 大 IAA 商业化闭环）
  */
@@ -198,6 +200,8 @@ export class GameEngine {
     timer: 0,
     duration: 3.0,
   };
+  private pendingGuideStage: GuideStageKey | '' = '';
+  private pendingGuideVisibleSec = 0;
   private readonly upgradeGapCache: UpgradeGapInfo = {
     minCost: 60,
     canUpgradeNow: false,
@@ -978,7 +982,10 @@ export class GameEngine {
     this.weaponBanner.active = false;
     this.weaponBanner.timer = 0;
     this.guideBanner.active = false;
+    this.guideBanner.stage = '';
     this.guideBanner.timer = 0;
+    this.pendingGuideStage = '';
+    this.pendingGuideVisibleSec = 0;
     this.justUnlockedEndless = false;
 
     this.fireCd = 0;
@@ -1130,9 +1137,20 @@ export class GameEngine {
       }
     }
     if (this.guideBanner.active) {
+      if (this.pendingGuideStage && this.state === 'PLAYING') {
+        this.pendingGuideVisibleSec += dt;
+        if (this.pendingGuideVisibleSec >= GUIDE_PERSIST_VISIBLE_SEC) {
+          this.saveManager.markGuideSeen(this.pendingGuideStage);
+          this.pendingGuideStage = '';
+          this.pendingGuideVisibleSec = 0;
+        }
+      }
       this.guideBanner.timer = Math.max(0, this.guideBanner.timer - dt);
       if (this.guideBanner.timer <= 0) {
         this.guideBanner.active = false;
+        this.guideBanner.stage = '';
+        this.pendingGuideStage = '';
+        this.pendingGuideVisibleSec = 0;
       }
     }
     if (this.hazardHurtCd > 0) this.hazardHurtCd = Math.max(0, this.hazardHurtCd - dt);
@@ -2415,7 +2433,9 @@ export class GameEngine {
 
   private triggerGuideBanner(stage: GuideStageKey): boolean {
     if (this.saveManager.hasSeenGuide(stage)) return false;
-    this.saveManager.markGuideSeen(stage);
+    if (this.guideBanner.active && this.guideBanner.stage === stage) return false;
+    this.pendingGuideStage = stage;
+    this.pendingGuideVisibleSec = 0;
     this.guideBanner.active = true;
     this.guideBanner.stage = stage;
     this.guideBanner.duration = 3.0;
