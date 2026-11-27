@@ -30,11 +30,13 @@ import {
   type GameMode,
   type GameState,
   type Gate,
+  type GuideBannerState,
   type LevelConfig,
   type Particle,
   type SaveData,
   type SkinDef,
   type ToastMessage,
+  type UpgradeGapInfo,
   type WeaponBannerState,
   type WeaponDef,
   type Zombie,
@@ -66,6 +68,7 @@ export interface RenderSnapshot {
   invincibleTimer: number;
   resumeGraceTimer: number;
   weaponBanner: WeaponBannerState;
+  guideBanner: GuideBannerState;
   hasArmoryRedDot: boolean;
   skin: SkinDef;
   level: LevelConfig;
@@ -86,7 +89,9 @@ export interface RenderSnapshot {
   comboTimer: number;
   comboPulse: number;
   isVictory: boolean;
+  justUnlockedEndless: boolean;
   reviveProgressPct: number;
+  revivesRemaining: number;
   resultClaimed: boolean;
   airdrop: AirdropCrate;
   save: SaveData;
@@ -94,6 +99,7 @@ export interface RenderSnapshot {
   safeTop: number;
   upgradeCosts: { attack: number; firerate: number; squad: number };
   canAfford: { attack: boolean; firerate: boolean; squad: boolean };
+  upgradeGap: UpgradeGapInfo;
   bullets: RenderPoolView<Bullet>;
   zombies: RenderPoolView<Zombie>;
   barrels: RenderPoolView<Barrel>;
@@ -197,35 +203,26 @@ export class Renderer {
 
   private readonly damageVignetteGrad: CanvasGradient;
   private readonly menuOverlayGrad: CanvasGradient;
-  private readonly airdropBeamGrad: CanvasGradient;
-
-  private readonly hudAirdropBtnStyle: ButtonStyle = {
-    fillTop: '#fbbf24',
-    fillBottom: '#d97706',
-    borderColor: '#fef9c3',
-    textColor: '#0f172a',
-    fontSize: 20,
-    radius: 16,
-    pulseScale: 1,
-  };
 
   private readonly menuSuperBtnStyle: ButtonStyle = {
     fillTop: '#f59e0b',
     fillBottom: '#d97706',
     borderColor: '#fde68a',
     textColor: '#0f172a',
-    fontSize: 27,
-    radius: 22,
-    pulseScale: 1,
+    fontSize: 22,
+    subText: '加特林 + 5人开局',
+    subTextColor: '#451a03',
+    radius: 18,
   };
 
   private readonly menuStartBtnStyle: ButtonStyle = {
     fillTop: '#10b981',
     fillBottom: '#059669',
-    borderColor: '#6ee7b7',
-    fontSize: 32,
+    borderColor: '#a7f3d0',
+    fontSize: 34,
     subText: '',
     radius: 22,
+    pulseScale: 1,
   };
 
   private readonly menuEndlessBtnStyle: ButtonStyle = {
@@ -243,8 +240,8 @@ export class Renderer {
     fillBottom: '#334155',
     borderColor: '#64748b',
     textColor: '#cbd5e1',
-    fontSize: 26,
-    subText: '通关第 1 关解锁',
+    fontSize: 24,
+    subText: '完成第 1 关解锁（奖励丰厚金币）',
     subTextColor: '#fde047',
     radius: 20,
   };
@@ -284,10 +281,6 @@ export class Renderer {
     this.menuOverlayGrad.addColorStop(0, 'rgba(9, 13, 20, 0.72)');
     this.menuOverlayGrad.addColorStop(0.55, 'rgba(9, 13, 20, 0.48)');
     this.menuOverlayGrad.addColorStop(1, 'rgba(9, 13, 20, 0.88)');
-
-    this.airdropBeamGrad = ctx.createLinearGradient(0, -160, 0, 88);
-    this.airdropBeamGrad.addColorStop(0, 'rgba(250, 204, 21, 0)');
-    this.airdropBeamGrad.addColorStop(1, 'rgba(250, 204, 21, 0.45)');
   }
 
   private getFloatFont(size: number): string {
@@ -313,16 +306,6 @@ export class Renderer {
     this.renderGates(snap);
     this.renderBarrels(snap);
     this.renderZombies(snap);
-
-    if (snap.airdrop.active && !snap.airdrop.claimed) {
-      this.renderAirdropCrate(
-        snap.airdrop,
-        snap.clock,
-        actions.onTriggerAirdrop,
-        snap.state === 'PLAYING',
-      );
-    }
-
     this.renderSquad(snap);
     this.renderBossProjectiles(snap);
     this.renderBulletsAndEffects(snap);
@@ -663,6 +646,18 @@ export class Renderer {
         ctx.fill();
       }
 
+      if (b.highlightGuide) {
+        const ringPulse = 1 + Math.sin(snap.clock * 8) * 0.06;
+        const rw = (bw + 24) * ringPulse;
+        const rh = (bh + 24) * ringPulse;
+        drawRoundedRect(ctx, ox - rw * 0.5, oy - rh * 0.5, rw, rh, 22);
+        ctx.fillStyle = 'rgba(253, 224, 71, 0.14)';
+        ctx.fill();
+        ctx.strokeStyle = '#fde047';
+        ctx.lineWidth = 3.5;
+        ctx.stroke();
+      }
+
       ctx.font = `900 40px ${FONT_FAMILY}`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
@@ -914,47 +909,6 @@ export class Renderer {
       const bw = 150;
       const bh = 12;
       ctx.fillRect(z.x - bw * 0.5, z.y - 102 - 14, bw * Math.max(0, z.hp / z.maxHp), bh);
-    }
-  }
-
-  private renderAirdropCrate(
-    airdrop: AirdropCrate,
-    clock: number,
-    onTrigger: () => void,
-    interactive: boolean,
-  ): void {
-    const ctx = this.ctx;
-    const pulse = 1 + Math.sin(clock * 8) * 0.07;
-    const w = 88 * pulse;
-    const h = 88 * pulse;
-    const x = airdrop.x - w * 0.5;
-    const y = airdrop.y - h * 0.5;
-
-    ctx.save();
-    ctx.translate(airdrop.x, y);
-    ctx.fillStyle = this.airdropBeamGrad;
-    ctx.fillRect(-28, -150, 56, 160 + h * 0.5);
-    ctx.restore();
-
-    ctx.fillStyle = '#f59e0b';
-    drawRoundedRect(ctx, x, y, w, h, 16);
-    ctx.fill();
-    ctx.strokeStyle = '#fef08a';
-    ctx.lineWidth = 4;
-    drawRoundedRect(ctx, x, y, w, h, 16);
-    ctx.stroke();
-
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillStyle = '#0f172a';
-    ctx.font = `900 18px ${FONT_FAMILY}`;
-    ctx.fillText('超级空投', airdrop.x, airdrop.y - 11);
-    ctx.fillStyle = '#ffffff';
-    ctx.font = `800 15px ${FONT_FAMILY}`;
-    ctx.fillText('点击领取', airdrop.x, airdrop.y + 14);
-
-    if (interactive) {
-      this.hitBoxes.registerRect('airdrop_crate', x - 18, y - 18, w + 36, h + 36, onTrigger);
     }
   }
 
@@ -1323,9 +1277,13 @@ export class Renderer {
       ctx.restore();
     }
 
-    // 切枪高光横幅、火力翻倍提示条 & 超级空投快捷键
+    // 分段引导横幅、切枪高光横幅、火力翻倍提示条 & 右侧非强制呼吸空投按钮
     let subY =
       snap.bossRef && snap.bossRef.active && !snap.bossRef.dying ? top + 148 : top + 104;
+    if (snap.guideBanner.active) {
+      this.renderGuideBanner(snap, subY);
+      subY += 62;
+    }
     if (snap.weaponBanner.active) {
       this.renderWeaponBanner(snap, subY);
       subY += 72;
@@ -1345,19 +1303,7 @@ export class Renderer {
     }
 
     if (snap.airdrop.active && !snap.airdrop.claimed && snap.state === 'PLAYING') {
-      this.hudAirdropBtnStyle.pulseScale = 1 + Math.sin(snap.clock * 8) * 0.04;
-      drawButton(
-        ctx,
-        this.hitBoxes,
-        'hud_airdrop_btn',
-        LOGICAL_WIDTH - 208,
-        Math.max(subY + 60, top + 258),
-        186,
-        52,
-        '超级空投',
-        actions.onTriggerAirdrop,
-        this.hudAirdropBtnStyle,
-      );
+      this.renderAirdropButton(snap, top, actions);
     }
 
     if (snap.state === 'PLAYING' && snap.resumeGraceTimer > 0) {
@@ -1376,6 +1322,113 @@ export class Renderer {
       ctx.fillText('恢复保护中', LOGICAL_WIDTH / 2, PLAYER_Y - 104);
       ctx.restore();
     }
+  }
+
+  private renderGuideBanner(snap: RenderSnapshot, baseY: number): void {
+    const gb = snap.guideBanner;
+    if (!gb.active || gb.duration <= 0) return;
+
+    const ctx = this.ctx;
+    const elapsed = Math.max(0, gb.duration - gb.timer);
+    const slideIn = Math.min(1, elapsed / 0.2);
+    const easedIn = 1 - (1 - slideIn) * (1 - slideIn);
+    const alpha = gb.timer < 0.28 ? Math.max(0, gb.timer / 0.28) : easedIn;
+
+    const bannerW = 636;
+    const bannerH = 52;
+    const drawX = (LOGICAL_WIDTH - bannerW) * 0.5;
+    const drawY = baseY - (1 - easedIn) * 24;
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    drawRoundedRect(ctx, drawX, drawY, bannerW, bannerH, 16);
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
+    ctx.fill();
+    ctx.strokeStyle = gb.accentColor;
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = `900 20px ${FONT_FAMILY}`;
+    ctx.fillStyle = '#0f172a';
+    ctx.fillText(gb.text, LOGICAL_WIDTH / 2 + 1.5, drawY + bannerH * 0.5 + 1.5);
+    ctx.fillStyle = '#fef08a';
+    ctx.fillText(gb.text, LOGICAL_WIDTH / 2, drawY + bannerH * 0.5);
+    ctx.restore();
+  }
+
+  private renderAirdropButton(
+    snap: RenderSnapshot,
+    safeTop: number,
+    actions: RenderActions,
+  ): void {
+    const ad = snap.airdrop;
+    const duration = Math.max(1, ad.duration || 8);
+    const ratio = Math.max(0, Math.min(1, ad.timer / duration));
+    const elapsed = Math.max(0, duration - ad.timer);
+    const fadeIn = Math.min(1, elapsed / 0.25);
+    const fadeOut = ad.timer < 0.8 ? Math.max(0, ad.timer / 0.8) : 1;
+    const alpha = Math.min(fadeIn, fadeOut);
+    if (alpha <= 0.01) return;
+
+    const cx = 632;
+    const cy = Math.max(safeTop + 330, 440);
+    const radius = 52;
+    const scale = 1 + Math.sin(snap.clock * 6) * 0.055;
+
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.translate(cx, cy);
+    ctx.scale(scale, scale);
+
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
+    ctx.beginPath();
+    ctx.arc(0, 0, radius + 5, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.arc(0, 0, radius + 1, 0, Math.PI * 2);
+    ctx.stroke();
+
+    if (ratio > 0.01) {
+      ctx.strokeStyle = '#fef08a';
+      ctx.lineWidth = 6;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.arc(0, 0, radius + 1, -Math.PI * 0.5, -Math.PI * 0.5 + Math.PI * 2 * ratio);
+      ctx.stroke();
+    }
+
+    ctx.fillStyle = '#f59e0b';
+    ctx.beginPath();
+    ctx.arc(0, 0, radius - 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#fde68a';
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#0f172a';
+    ctx.font = `900 18px ${FONT_FAMILY}`;
+    ctx.fillText('超级空投', 0, -10);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `900 20px ${FONT_FAMILY}`;
+    ctx.fillText(`${Math.ceil(ad.timer)}秒`, 0, 14);
+    ctx.restore();
+
+    this.hitBoxes.registerRect(
+      'hud_airdrop_btn',
+      cx - 60,
+      cy - 60,
+      120,
+      120,
+      actions.onTriggerAirdrop,
+    );
   }
 
   private renderWeaponBanner(snap: RenderSnapshot, baseY: number): void {
@@ -1777,32 +1830,19 @@ export class Renderer {
       snap.clock,
     );
 
-    // 主菜单核心开局按钮区（底边最高 958 <= 1095，完整避让健康忠告与底部 Banner 安全区）
+    // 主菜单核心开局按钮区（「开始突围」设为最醒目大主按钮；首局先不推销满配广告）
     if (!disableInteraction) {
-      this.menuSuperBtnStyle.pulseScale = 1 + Math.sin(snap.clock * 4) * 0.015;
-      drawButton(
-        ctx,
-        this.hitBoxes,
-        'menu_super_start',
-        70,
-        686,
-        LOGICAL_WIDTH - 140,
-        84,
-        '看广告满配开局（加特林+5人）',
-        actions.onStartSuperBattle,
-        this.menuSuperBtnStyle,
-      );
-
       this.menuStartBtnStyle.subText = `第${snap.level.id}关 · ${snap.level.name}`;
+      this.menuStartBtnStyle.pulseScale = 1 + Math.sin(snap.clock * 4) * 0.015;
       drawButton(
         ctx,
         this.hitBoxes,
         'menu_start',
-        70,
-        784,
-        LOGICAL_WIDTH - 140,
-        84,
-        '开始关卡突围',
+        64,
+        690,
+        LOGICAL_WIDTH - 128,
+        92,
+        '开始突围',
         actions.onStartBattle,
         this.menuStartBtnStyle,
       );
@@ -1812,18 +1852,50 @@ export class Renderer {
           ? `最高第 ${snap.save.endlessBestWave} 波 · 最高击杀 ${snap.save.endlessBestKills}`
           : '40秒进阶·偶数波强化尸王';
 
-      drawButton(
-        ctx,
-        this.hitBoxes,
-        'menu_endless',
-        70,
-        882,
-        LOGICAL_WIDTH - 140,
-        76,
-        '无尽狂潮模式',
-        actions.onStartEndless,
-        snap.endlessUnlocked ? this.menuEndlessBtnStyle : this.menuEndlessLockedBtnStyle,
-      );
+      if (snap.save.totalRunsPlayed === 0) {
+        drawButton(
+          ctx,
+          this.hitBoxes,
+          'menu_endless',
+          96,
+          804,
+          LOGICAL_WIDTH - 192,
+          74,
+          '无尽狂潮模式',
+          actions.onStartEndless,
+          snap.endlessUnlocked ? this.menuEndlessBtnStyle : this.menuEndlessLockedBtnStyle,
+        );
+        ctx.fillStyle = '#cbd5e1';
+        ctx.font = `700 18px ${FONT_FAMILY}`;
+        ctx.textAlign = 'center';
+        ctx.fillText('单指左右滑动自动射击，打爆木桶秒换神装', LOGICAL_WIDTH / 2, 916);
+      } else {
+        drawButton(
+          ctx,
+          this.hitBoxes,
+          'menu_super_start',
+          96,
+          798,
+          LOGICAL_WIDTH - 192,
+          68,
+          '看广告满配开局',
+          actions.onStartSuperBattle,
+          this.menuSuperBtnStyle,
+        );
+
+        drawButton(
+          ctx,
+          this.hitBoxes,
+          'menu_endless',
+          96,
+          880,
+          LOGICAL_WIDTH - 192,
+          74,
+          '无尽狂潮模式',
+          actions.onStartEndless,
+          snap.endlessUnlocked ? this.menuEndlessBtnStyle : this.menuEndlessLockedBtnStyle,
+        );
+      }
     }
 
     // 标准《健康游戏忠告》（位于 Banner 上方安全区）
@@ -1866,16 +1938,16 @@ export class Renderer {
 
   private renderSwipeTutorial(snap: RenderSnapshot): void {
     const ctx = this.ctx;
-    const cx = Math.max(210, Math.min(LOGICAL_WIDTH - 210, snap.squadX));
+    const cx = Math.max(232, Math.min(LOGICAL_WIDTH - 232, snap.squadX));
     const y = PLAYER_Y + 108;
     const offset = Math.sin(snap.clock * 6) * 14;
 
     ctx.save();
     ctx.globalAlpha = snap.tutorialAlpha;
-    drawRoundedRect(ctx, cx - 178, y - 28, 356, 56, 28);
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.78)';
+    drawRoundedRect(ctx, cx - 218, y - 28, 436, 56, 28);
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.82)';
     ctx.fill();
-    ctx.strokeStyle = 'rgba(56, 189, 248, 0.75)';
+    ctx.strokeStyle = 'rgba(56, 189, 248, 0.78)';
     ctx.lineWidth = 2.5;
     ctx.stroke();
 
@@ -1883,19 +1955,19 @@ export class Renderer {
     ctx.lineWidth = 4;
     ctx.lineCap = 'round';
     ctx.beginPath();
-    ctx.moveTo(cx - 126 - offset, y - 10);
-    ctx.lineTo(cx - 144 - offset, y);
-    ctx.lineTo(cx - 126 - offset, y + 10);
-    ctx.moveTo(cx + 126 + offset, y - 10);
-    ctx.lineTo(cx + 144 + offset, y);
-    ctx.lineTo(cx + 126 + offset, y + 10);
+    ctx.moveTo(cx - 178 - offset, y - 10);
+    ctx.lineTo(cx - 196 - offset, y);
+    ctx.lineTo(cx - 178 - offset, y + 10);
+    ctx.moveTo(cx + 178 + offset, y - 10);
+    ctx.lineTo(cx + 196 + offset, y);
+    ctx.lineTo(cx + 178 + offset, y + 10);
     ctx.stroke();
 
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.font = `900 22px ${FONT_FAMILY}`;
+    ctx.font = `900 21px ${FONT_FAMILY}`;
     ctx.fillStyle = '#ffffff';
-    ctx.fillText('左右滑动控制走位', cx, y + 1);
+    ctx.fillText('左右滑动躲避，小队会自动开火', cx, y + 1);
     ctx.restore();
   }
 
@@ -2125,34 +2197,49 @@ export class Renderer {
     ctx.save();
     ctx.fillStyle = 'rgba(2, 6, 23, 0.84)';
     ctx.fillRect(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT);
-    drawPanelCard(ctx, 58, 300, LOGICAL_WIDTH - 116, 540, '小队全员倒下', '#ef4444');
+    drawPanelCard(ctx, 58, 264, LOGICAL_WIDTH - 116, 584, '小队全员倒下', '#ef4444');
 
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillStyle = '#fecaca';
-    ctx.font = '800 26px "PingFang SC", "Microsoft YaHei", sans-serif';
+    ctx.font = '800 24px "PingFang SC", "Microsoft YaHei", sans-serif';
     const reviveSubText =
       snap.mode === 'endless'
         ? `当前进度：无尽第 ${snap.endlessWave} 波 · 击杀 ${snap.kills}`
         : `当前突围进度：${snap.reviveProgressPct}%`;
-    ctx.fillText(reviveSubText, LOGICAL_WIDTH / 2, 434);
+    ctx.fillText(reviveSubText, LOGICAL_WIDTH / 2, 382);
 
     ctx.fillStyle = '#fde047';
-    ctx.font = '900 28px "PingFang SC", "Microsoft YaHei", sans-serif';
-    ctx.fillText('复活恢复五名队友并全屏清怪', LOGICAL_WIDTH / 2, 492);
+    ctx.font = '900 24px "PingFang SC", "Microsoft YaHei", sans-serif';
+    ctx.fillText(`本局已累计获得 ${snap.runCoins} 金币`, LOGICAL_WIDTH / 2, 420);
 
-    ctx.fillStyle = '#94a3b8';
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.72)';
+    drawRoundedRect(ctx, 92, 448, LOGICAL_WIDTH - 184, 94, 16);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(74, 222, 128, 0.45)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '900 22px "PingFang SC", "Microsoft YaHei", sans-serif';
+    ctx.fillText('复活立即恢复 6 名队友并清空周围尸潮', LOGICAL_WIDTH / 2, 480);
+
+    ctx.fillStyle = '#86efac';
     ctx.font = '700 18px "PingFang SC", "Microsoft YaHei", sans-serif';
-    ctx.fillText('本局仅限复活一次', LOGICAL_WIDTH / 2, 536);
+    ctx.fillText(
+      `（本局剩余 ${snap.revivesRemaining} 次 · 含 2.5 秒无敌护盾）`,
+      LOGICAL_WIDTH / 2,
+      516,
+    );
 
     drawButton(
       ctx,
       this.hitBoxes,
       'revive_ad',
       108,
-      588,
+      570,
       LOGICAL_WIDTH - 216,
-      98,
+      96,
       '看广告复活并清屏',
       actions.onReviveWatchAd,
       {
@@ -2160,7 +2247,7 @@ export class Renderer {
         fillBottom: '#16a34a',
         borderColor: '#bbf7d0',
         fontSize: 30,
-        subText: '含两秒半无敌护盾保护',
+        subText: `保住已得 ${snap.runCoins} 金币继续冲关`,
         radius: 22,
       },
     );
@@ -2170,7 +2257,7 @@ export class Renderer {
       this.hitBoxes,
       'revive_giveup',
       180,
-      714,
+      696,
       LOGICAL_WIDTH - 360,
       68,
       '放弃复活，前往结算',
@@ -2200,48 +2287,54 @@ export class Renderer {
     const resultBorder =
       snap.mode === 'endless' ? '#a855f7' : snap.isVictory ? '#22c55e' : '#ef4444';
 
-    drawPanelCard(ctx, 56, 200, LOGICAL_WIDTH - 112, 840, resultTitle, resultBorder);
+    drawPanelCard(ctx, 56, 178, LOGICAL_WIDTH - 112, 856, resultTitle, resultBorder);
 
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     if (snap.mode === 'endless') {
       ctx.fillStyle = '#f8fafc';
-      ctx.font = '800 25px "PingFang SC", "Microsoft YaHei", sans-serif';
+      ctx.font = '800 24px "PingFang SC", "Microsoft YaHei", sans-serif';
       ctx.fillText(
         `到达波次：第${snap.endlessWave}波（最高 第${Math.max(snap.endlessWave, snap.save.endlessBestWave)}波）`,
         LOGICAL_WIDTH / 2,
-        328,
+        304,
       );
 
       ctx.fillStyle = '#cbd5e1';
-      ctx.font = '700 22px "PingFang SC", "Microsoft YaHei", sans-serif';
+      ctx.font = '700 21px "PingFang SC", "Microsoft YaHei", sans-serif';
       ctx.fillText(
         `消灭感染者：${snap.kills}（最高 ${Math.max(snap.kills, snap.save.endlessBestKills)}） · 生存${Math.floor(snap.totalSurviveSec)}秒`,
         LOGICAL_WIDTH / 2,
-        374,
+        342,
       );
 
       if (snap.isNewEndlessRecord) {
-        ctx.fillStyle = '#4ade80';
+        ctx.fillStyle = '#c084fc';
         ctx.font = '900 22px "PingFang SC", "Microsoft YaHei", sans-serif';
-        ctx.fillText('突破历史最高纪录', LOGICAL_WIDTH / 2, 412);
+        ctx.fillText(`新纪录！最高波次突破至第 ${snap.endlessWave} 波！`, LOGICAL_WIDTH / 2, 382);
       }
 
       ctx.fillStyle = '#fde047';
-      ctx.font = '900 38px "PingFang SC", "Microsoft YaHei", sans-serif';
-      ctx.fillText(`基础金币：+${snap.runCoins}`, LOGICAL_WIDTH / 2, 458);
+      ctx.font = '900 36px "PingFang SC", "Microsoft YaHei", sans-serif';
+      ctx.fillText(`基础金币：+${snap.runCoins}`, LOGICAL_WIDTH / 2, 424);
     } else {
       ctx.fillStyle = '#f8fafc';
-      ctx.font = '800 26px "PingFang SC", "Microsoft YaHei", sans-serif';
-      ctx.fillText(`关卡：第${snap.level.id}关·${snap.level.name}`, LOGICAL_WIDTH / 2, 332);
+      ctx.font = '800 25px "PingFang SC", "Microsoft YaHei", sans-serif';
+      ctx.fillText(`关卡：第${snap.level.id}关·${snap.level.name}`, LOGICAL_WIDTH / 2, 308);
 
       ctx.fillStyle = '#cbd5e1';
-      ctx.font = '700 24px "PingFang SC", "Microsoft YaHei", sans-serif';
-      ctx.fillText(`本局消灭感染者：${snap.kills}`, LOGICAL_WIDTH / 2, 384);
+      ctx.font = '700 23px "PingFang SC", "Microsoft YaHei", sans-serif';
+      ctx.fillText(`本局消灭感染者：${snap.kills}`, LOGICAL_WIDTH / 2, 346);
+
+      if (snap.justUnlockedEndless) {
+        ctx.fillStyle = '#4ade80';
+        ctx.font = '900 22px "PingFang SC", "Microsoft YaHei", sans-serif';
+        ctx.fillText('已解锁新模式：无尽狂潮！', LOGICAL_WIDTH / 2, 384);
+      }
 
       ctx.fillStyle = '#fde047';
-      ctx.font = '900 40px "PingFang SC", "Microsoft YaHei", sans-serif';
-      ctx.fillText(`基础金币：+${snap.runCoins}`, LOGICAL_WIDTH / 2, 452);
+      ctx.font = '900 36px "PingFang SC", "Microsoft YaHei", sans-serif';
+      ctx.fillText(`基础金币：+${snap.runCoins}`, LOGICAL_WIDTH / 2, 424);
     }
 
     const mult =
@@ -2250,15 +2343,44 @@ export class Renderer {
         ? 3
         : 2;
 
+    const gapInfo = snap.upgradeGap;
+    let growthText = '';
+    let growthReady = false;
+    if (gapInfo.allMaxed) {
+      growthText = '全部局外战力已满级，冲刺更高无尽波次！';
+      growthReady = true;
+    } else if (gapInfo.canUpgradeNow) {
+      growthText = '金币已充足，可回主界面升级战力！';
+      growthReady = true;
+    } else if (!snap.resultClaimed) {
+      const withAdTotal = snap.save.coins + snap.runCoins * mult;
+      growthText =
+        withAdTotal >= gapInfo.minCost
+          ? `距离下次升级仅差 ${gapInfo.gap} 金币（看广告翻倍即可升级）`
+          : `距离下次升级仅差 ${gapInfo.gap} 金币（看广告翻倍加速升级）`;
+    } else {
+      growthText = `距离下次升级仅差 ${gapInfo.gap} 金币，再来一局即可凑齐`;
+    }
+
+    ctx.fillStyle = growthReady ? 'rgba(22, 101, 52, 0.55)' : 'rgba(15, 23, 42, 0.78)';
+    drawRoundedRect(ctx, 76, 456, LOGICAL_WIDTH - 152, 50, 14);
+    ctx.fill();
+    ctx.strokeStyle = growthReady ? '#4ade80' : '#fbbf24';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = growthReady ? '#bbf7d0' : '#fde047';
+    ctx.font = '800 19px "PingFang SC", "Microsoft YaHei", sans-serif';
+    ctx.fillText(growthText, LOGICAL_WIDTH / 2, 481);
+
     if (!snap.resultClaimed) {
       drawButton(
         ctx,
         this.hitBoxes,
         'res_claim_ad',
         104,
-        526,
+        528,
         LOGICAL_WIDTH - 208,
-        92,
+        90,
         `看广告 ${mult}倍领取`,
         actions.onResultClaimAd,
         {
@@ -2276,9 +2398,9 @@ export class Renderer {
         this.hitBoxes,
         'res_claim_normal',
         136,
-        636,
+        634,
         LOGICAL_WIDTH - 272,
-        70,
+        68,
         `普通领取 ${snap.runCoins} 金币`,
         actions.onResultClaimNormal,
         {
@@ -2291,7 +2413,7 @@ export class Renderer {
     } else {
       ctx.fillStyle = '#4ade80';
       ctx.font = '900 28px "PingFang SC", "Microsoft YaHei", sans-serif';
-      ctx.fillText('本局奖励已入账', LOGICAL_WIDTH / 2, 598);
+      ctx.fillText('本局奖励已入账', LOGICAL_WIDTH / 2, 610);
     }
 
     drawButton(
@@ -2299,9 +2421,9 @@ export class Renderer {
       this.hitBoxes,
       'res_retry',
       104,
-      746,
+      736,
       244,
-      78,
+      76,
       snap.mode === 'endless' ? '再战无尽' : snap.isVictory ? '挑战下一关' : '再次挑战',
       actions.onRestartBattle,
       {
@@ -2317,9 +2439,9 @@ export class Renderer {
       this.hitBoxes,
       'res_menu',
       372,
-      746,
+      736,
       244,
-      78,
+      76,
       '返回主菜单',
       actions.onBackToMenu,
       {
@@ -2336,9 +2458,9 @@ export class Renderer {
         this.hitBoxes,
         'res_share_video',
         104,
-        844,
+        834,
         LOGICAL_WIDTH - 208,
-        78,
+        76,
         '发布高光视频',
         actions.onShareHighlightVideo,
         {
@@ -2357,9 +2479,9 @@ export class Renderer {
         this.hitBoxes,
         'res_share_score',
         104,
-        844,
+        834,
         LOGICAL_WIDTH - 208,
-        78,
+        76,
         '分享战绩给好友',
         actions.onShareScore,
         {

@@ -1,5 +1,5 @@
 import type { PlatformSDK } from '../sdk/PlatformSDK';
-import type { SaveData, SkinId } from './types';
+import type { GuideStageKey, SaveData, SkinId, UpgradeGapInfo } from './types';
 
 const STORAGE_KEY = 'doomsday_gunner_save_v2';
 
@@ -34,6 +34,11 @@ export function createDefaultSaveData(): SaveData {
     muted: false,
     vibrateEnabled: true,
     tutorialDone: false,
+    guideSeen: {
+      barrel: false,
+      gate: false,
+      boss: false,
+    },
     lastVideoShareRewardDate: '',
     lastSidebarRewardDate: '',
     endlessBestWave: 0,
@@ -64,6 +69,10 @@ export class SaveManager {
         skinAdProgress: {
           ...defaults.skinAdProgress,
           ...(parsed.skinAdProgress || {}),
+        },
+        guideSeen: {
+          ...defaults.guideSeen,
+          ...(parsed.guideSeen || {}),
         },
       };
     } catch {
@@ -210,6 +219,55 @@ export class SaveManager {
     if (this.data.tutorialDone) return;
     this.data.tutorialDone = true;
     this.save();
+  }
+
+  public hasSeenGuide(stage: GuideStageKey): boolean {
+    return Boolean(this.data.guideSeen?.[stage]);
+  }
+
+  public markGuideSeen(stage: GuideStageKey): void {
+    if (this.data.guideSeen?.[stage]) return;
+    if (!this.data.guideSeen) {
+      this.data.guideSeen = { barrel: false, gate: false, boss: false };
+    }
+    this.data.guideSeen[stage] = true;
+    this.save();
+  }
+
+  public getCheapestUpgradeGap(extraCoins = 0, out?: UpgradeGapInfo): UpgradeGapInfo {
+    const target: UpgradeGapInfo = out ?? {
+      minCost: 0,
+      canUpgradeNow: false,
+      gap: 0,
+      allMaxed: false,
+    };
+
+    let minCost = Infinity;
+    if (this.data.attackLevel < MAX_UPGRADE_LEVEL) {
+      minCost = Math.min(minCost, this.getUpgradeCost('attack'));
+    }
+    if (this.data.fireRateLevel < MAX_UPGRADE_LEVEL) {
+      minCost = Math.min(minCost, this.getUpgradeCost('firerate'));
+    }
+    if (this.data.squadLevel < 6) {
+      minCost = Math.min(minCost, this.getUpgradeCost('squad'));
+    }
+
+    if (!Number.isFinite(minCost)) {
+      target.minCost = 0;
+      target.canUpgradeNow = false;
+      target.gap = 0;
+      target.allMaxed = true;
+      return target;
+    }
+
+    const totalCoins = this.data.coins + Math.max(0, Math.floor(extraCoins));
+    const gap = Math.max(0, minCost - totalCoins);
+    target.minCost = minCost;
+    target.canUpgradeNow = gap === 0;
+    target.gap = gap;
+    target.allMaxed = false;
+    return target;
   }
 
   public setVibrateEnabled(enabled: boolean): void {

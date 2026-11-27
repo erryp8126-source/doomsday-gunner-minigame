@@ -36,6 +36,8 @@ export type BarrelRewardType = 'weapon' | 'squad' | 'rate';
 
 export type GateBuffKind = 'squad' | 'rate';
 
+export type GuideStageKey = 'barrel' | 'gate' | 'boss';
+
 export interface WeaponDef {
   id: WeaponId;
   name: string;
@@ -131,6 +133,7 @@ export interface Barrel extends PoolItem {
   iconKey: SpriteKey | '';
   hitScale: number;
   hitFlash: number;
+  highlightGuide: boolean;
 }
 
 export interface Gate extends PoolItem {
@@ -222,6 +225,8 @@ export interface AirdropCrate {
   y: number;
   speed: number;
   claimed: boolean;
+  timer: number;
+  duration: number;
 }
 
 export interface HitRect {
@@ -248,6 +253,7 @@ export interface SaveData {
   muted: boolean;
   vibrateEnabled: boolean;
   tutorialDone: boolean;
+  guideSeen: Record<GuideStageKey, boolean>;
   lastVideoShareRewardDate: string;
   lastSidebarRewardDate: string;
   endlessBestWave: number;
@@ -269,6 +275,22 @@ export interface WeaponBannerState {
   weaponName: string;
   iconKey: SpriteKey | '';
   accentColor: string;
+}
+
+export interface GuideBannerState {
+  active: boolean;
+  stage: GuideStageKey | '';
+  text: string;
+  accentColor: string;
+  timer: number;
+  duration: number;
+}
+
+export interface UpgradeGapInfo {
+  minCost: number;
+  canUpgradeNow: boolean;
+  gap: number;
+  allMaxed: boolean;
 }
 
 export function clamp(val: number, min: number, max: number): number {

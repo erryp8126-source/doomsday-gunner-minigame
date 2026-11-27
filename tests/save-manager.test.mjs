@@ -27,6 +27,7 @@ test('SaveManager 默认存档字段与初始未解锁状态正确', () => {
   assert.equal(data.equippedSkin, 'standard');
   assert.equal(data.vibrateEnabled, true);
   assert.equal(data.tutorialDone, false);
+  assert.deepEqual(data.guideSeen, { barrel: false, gate: false, boss: false });
   assert.equal(sm.isEndlessUnlocked(), false);
 });
 
@@ -65,4 +66,54 @@ test('SaveManager 每日视频分享与侧边栏复访奖励同一天防重复�
   assert.equal(sm.canClaimDailySidebarReward(), false);
   assert.equal(sm.claimDailySidebarReward(200), false, '同一天不可重复领取每日侧边栏复访奖励');
   assert.equal(sm.getData().coins, 350);
+});
+
+test('SaveManager 分段引导标记持久化与旧存档兼容', () => {
+  const { SaveManager } = loadTs('src/game/SaveManager.ts');
+  const sdk = createStorageSdk();
+  // 模拟无 guideSeen 字段的旧版存档
+  sdk.setStorage('doomsday_gunner_save_v2', JSON.stringify({ coins: 45, unlockedLevel: 1 }));
+
+  const sm = new SaveManager(sdk);
+  assert.equal(sm.hasSeenGuide('barrel'), false);
+  assert.equal(sm.hasSeenGuide('gate'), false);
+  assert.equal(sm.hasSeenGuide('boss'), false);
+
+  sm.markGuideSeen('barrel');
+  sm.markGuideSeen('gate');
+
+  const reloaded = new SaveManager(sdk);
+  assert.equal(reloaded.hasSeenGuide('barrel'), true);
+  assert.equal(reloaded.hasSeenGuide('gate'), true);
+  assert.equal(reloaded.hasSeenGuide('boss'), false);
+});
+
+test('SaveManager getCheapestUpgradeGap 准确计算升级差额、复用对象及满级状态', () => {
+  const { SaveManager } = loadTs('src/game/SaveManager.ts');
+  const sdk = createStorageSdk();
+  const sm = new SaveManager(sdk);
+
+  // 初始最便宜升级为 60 金币（基础攻击 / 初始射速 1级）
+  const out = { minCost: 0, canUpgradeNow: false, gap: 0, allMaxed: false };
+  const res1 = sm.getCheapestUpgradeGap(25, out);
+  assert.equal(res1, out, '传入 out 时应原地复用同一结构体避免 GC');
+  assert.equal(out.minCost, 60);
+  assert.equal(out.gap, 35);
+  assert.equal(out.canUpgradeNow, false);
+  assert.equal(out.allMaxed, false);
+
+  sm.addCoins(40);
+  sm.getCheapestUpgradeGap(20, out);
+  assert.equal(out.gap, 0);
+  assert.equal(out.canUpgradeNow, true);
+
+  // 模拟全部升至满级
+  const data = sm.getData();
+  data.attackLevel = 20;
+  data.fireRateLevel = 20;
+  data.squadLevel = 6;
+  sm.getCheapestUpgradeGap(100, out);
+  assert.equal(out.allMaxed, true);
+  assert.equal(out.canUpgradeNow, false);
+  assert.equal(out.minCost, 0);
 });

@@ -24,9 +24,12 @@ import {
   type GameMode,
   type GameState,
   type Gate,
+  type GuideBannerState,
+  type GuideStageKey,
   type Particle,
   type SkinDef,
   type ToastMessage,
+  type UpgradeGapInfo,
   type WeaponBannerState,
   type WeaponId,
   type Zombie,
@@ -187,6 +190,21 @@ export class GameEngine {
     iconKey: '',
     accentColor: '#38bdf8',
   };
+  private readonly guideBanner: GuideBannerState = {
+    active: false,
+    stage: '',
+    text: '',
+    accentColor: '#38bdf8',
+    timer: 0,
+    duration: 3.0,
+  };
+  private readonly upgradeGapCache: UpgradeGapInfo = {
+    minCost: 60,
+    canUpgradeNow: false,
+    gap: 60,
+    allMaxed: false,
+  };
+  private justUnlockedEndless = false;
 
   private fireCd = 0;
   private recoil = 0;
@@ -301,6 +319,8 @@ export class GameEngine {
     y: -60,
     speed: 145,
     claimed: false,
+    timer: 0,
+    duration: 8.0,
   };
 
   private readonly bulletPool = new ObjectPool<Bullet>(
@@ -361,6 +381,7 @@ export class GameEngine {
       iconKey: '',
       hitScale: 1,
       hitFlash: 0,
+      highlightGuide: false,
     }),
     24,
   );
@@ -457,6 +478,7 @@ export class GameEngine {
       invincibleTimer: this.invincibleTimer,
       resumeGraceTimer: this.resumeGraceTimer,
       weaponBanner: this.weaponBanner,
+      guideBanner: this.guideBanner,
       hasArmoryRedDot: false,
       skin: getSkinDef(initSave.equippedSkin),
       level: initLevel,
@@ -477,7 +499,9 @@ export class GameEngine {
       comboTimer: this.comboTimer,
       comboPulse: this.comboPulse,
       isVictory: this.isVictory,
+      justUnlockedEndless: this.justUnlockedEndless,
       reviveProgressPct: 0,
+      revivesRemaining: AD_RULES.maxRevivesPerRun,
       resultClaimed: this.resultClaimed,
       airdrop: this.airdrop,
       save: initSave,
@@ -485,6 +509,7 @@ export class GameEngine {
       safeTop: 0,
       upgradeCosts: { attack: 0, firerate: 0, squad: 0 },
       canAfford: { attack: false, firerate: false, squad: false },
+      upgradeGap: this.upgradeGapCache,
       bullets: this.bulletPool,
       zombies: this.zombiePool,
       barrels: this.barrelPool,
@@ -504,7 +529,7 @@ export class GameEngine {
       onStartBattle: () => this.startGame('campaign', false),
       onStartEndless: () => {
         if (!this.saveManager.isEndlessUnlocked()) {
-          this.showToast('通关第 1 关即可解锁无尽狂潮', '#fbbf24');
+          this.showToast('完成第 1 关解锁无尽狂潮（奖励丰厚金币）', '#fbbf24');
           return;
         }
         this.startGame('endless', false);
@@ -952,6 +977,9 @@ export class GameEngine {
     this.resumeGraceTimer = 0;
     this.weaponBanner.active = false;
     this.weaponBanner.timer = 0;
+    this.guideBanner.active = false;
+    this.guideBanner.timer = 0;
+    this.justUnlockedEndless = false;
 
     this.fireCd = 0;
     this.recoil = 0;
@@ -978,6 +1006,8 @@ export class GameEngine {
     this.resultClaimed = false;
     this.airdrop.active = false;
     this.airdrop.claimed = false;
+    this.airdrop.timer = 0;
+    this.airdrop.duration = 8.0;
 
     this.saveManager.incrementRunCount();
     if (!this.saveManager.getData().tutorialDone) {
@@ -1025,6 +1055,7 @@ export class GameEngine {
 
   private triggerGameOver(victory: boolean): void {
     this.isVictory = victory;
+    this.justUnlockedEndless = false;
     this.sdk.stopBattleRecording();
     this.resetBossState();
     this.saveManager.recordBestKills(this.kills);
@@ -1040,8 +1071,10 @@ export class GameEngine {
       this.sdk.playSound('defeat');
       this.sdk.vibrate('medium');
     } else if (victory) {
+      const wasUnlocked = this.saveManager.isEndlessUnlocked();
       this.runCoins += this.currentLevel.clearCoins;
       this.saveManager.markLevelCleared(this.currentLevel.id, LEVELS.length);
+      this.justUnlockedEndless = !wasUnlocked && this.saveManager.isEndlessUnlocked();
       this.sdk.playSound('victory');
       this.sdk.vibrate('heavy');
     } else {
@@ -1096,6 +1129,12 @@ export class GameEngine {
         this.weaponBanner.active = false;
       }
     }
+    if (this.guideBanner.active) {
+      this.guideBanner.timer = Math.max(0, this.guideBanner.timer - dt);
+      if (this.guideBanner.timer <= 0) {
+        this.guideBanner.active = false;
+      }
+    }
     if (this.hazardHurtCd > 0) this.hazardHurtCd = Math.max(0, this.hazardHurtCd - dt);
     if (this.bossState.shockwaveFlash > 0) {
       this.bossState.shockwaveFlash = Math.max(0, this.bossState.shockwaveFlash - dt);
@@ -1138,7 +1177,7 @@ export class GameEngine {
       this.fireCd = 1 / (w.fireRate * totalRateMult);
     }
 
-    // 局内超级空投（尸王登场前 10 秒空降）
+    // 局内超级空投（尸王登场前 10 秒出现 8 秒非强制右侧呼吸入口，绝不强行弹窗打断）
     if (
       !this.airdropTriggeredThisRun &&
       !this.bossSpawned &&
@@ -1147,18 +1186,13 @@ export class GameEngine {
       this.airdropTriggeredThisRun = true;
       this.airdrop.active = true;
       this.airdrop.claimed = false;
-      this.airdrop.x = LOGICAL_WIDTH / 2 + (Math.random() > 0.5 ? 72 : -72);
-      this.airdrop.y = -50;
-      this.showToast('空投支援降落，点击可领强力补给', '#fde047');
+      this.airdrop.duration = 8.0;
+      this.airdrop.timer = 8.0;
     }
 
     if (this.airdrop.active && !this.airdrop.claimed) {
-      this.airdrop.y += this.airdrop.speed * dt;
-      if (this.airdrop.y >= PLAYER_Y - 18 && Math.abs(this.airdrop.x - this.squadX) < 58) {
-        this.openAirdropModal();
-        return;
-      }
-      if (this.airdrop.y > LOGICAL_HEIGHT + 60) {
+      this.airdrop.timer = Math.max(0, this.airdrop.timer - dt);
+      if (this.airdrop.timer <= 0) {
         this.airdrop.active = false;
       }
     }
@@ -1362,6 +1396,7 @@ export class GameEngine {
     this.airdropTriggeredThisRun = false;
     this.airdrop.active = false;
     this.airdrop.claimed = false;
+    this.airdrop.timer = 0;
     if (this.endlessWave % 2 === 0) {
       this.showToast(`进入无尽第${this.endlessWave}波！强化尸王即将现身`, '#fde047', 2.6);
     } else {
@@ -1431,6 +1466,7 @@ export class GameEngine {
 
     this.addShake(14, 0.38);
     this.showToast(`警告：${lv.bossName}来袭，全队集火`, '#f87171');
+    this.triggerGuideBanner('boss');
   }
 
   private applySquadDamage(loss: number, label: string, fxX: number, fxY: number): void {
@@ -1698,6 +1734,7 @@ export class GameEngine {
     b.iconKey = pick.iconKey;
     b.hitScale = 1;
     b.hitFlash = 0;
+    b.highlightGuide = this.triggerGuideBanner('barrel');
     return idx;
   }
 
@@ -1729,6 +1766,7 @@ export class GameEngine {
   private spawnGatePair(): void {
     const pairId = this.gatePairSeq++;
     const leftPos = Math.random() > 0.5;
+    this.triggerGuideBanner('gate');
 
     for (let i = 0; i < 2; i++) {
       const g = this.gatePool.acquire();
@@ -1893,6 +1931,7 @@ export class GameEngine {
         this.airdropTriggeredThisRun = false;
         this.airdrop.active = false;
         this.airdrop.claimed = false;
+        this.airdrop.timer = 0;
         this.showToast(`击破尸王！增援两名队友，进入无尽第${this.endlessWave}波`, '#fde047', 2.8);
       } else {
         this.triggerGameOver(true);
@@ -2252,7 +2291,7 @@ export class GameEngine {
 
   private performRevive(): void {
     this.revivesUsedThisRun += 1;
-    this.squadCount = 5;
+    this.squadCount = 6;
     this.invincibleTimer = 2.5;
     this.hazardHurtCd = 0;
     this.bossFireballPool.releaseAll();
@@ -2281,7 +2320,7 @@ export class GameEngine {
         this.zombiePool.release(z);
       }
     }
-    this.showToast('满血复活！五名队友回归并全屏清怪', '#4ade80');
+    this.showToast('满血复活！六名队友回归并清空周围尸潮', '#4ade80');
     this.setState('PLAYING');
   }
 
@@ -2374,6 +2413,26 @@ export class GameEngine {
     this.weaponBanner.accentColor = w.color;
   }
 
+  private triggerGuideBanner(stage: GuideStageKey): boolean {
+    if (this.saveManager.hasSeenGuide(stage)) return false;
+    this.saveManager.markGuideSeen(stage);
+    this.guideBanner.active = true;
+    this.guideBanner.stage = stage;
+    this.guideBanner.duration = 3.0;
+    this.guideBanner.timer = 3.0;
+    if (stage === 'barrel') {
+      this.guideBanner.text = '打爆数字木桶，立即换强力武器或加队友！';
+      this.guideBanner.accentColor = '#fbbf24';
+    } else if (stage === 'gate') {
+      this.guideBanner.text = '射击红色大门可将其打蓝，穿过获得队友或射速加成！';
+      this.guideBanner.accentColor = '#38bdf8';
+    } else {
+      this.guideBanner.text = '注意躲避地面红圈和冲锋红道，破盾后全力输出！';
+      this.guideBanner.accentColor = '#f87171';
+    }
+    return true;
+  }
+
   private render(): void {
     const save = this.saveManager.getData();
     const insets = this.sdk.getLogicalSafeInsets();
@@ -2412,6 +2471,7 @@ export class GameEngine {
     snap.invincibleTimer = this.invincibleTimer;
     snap.resumeGraceTimer = this.resumeGraceTimer;
     snap.weaponBanner = this.weaponBanner;
+    snap.guideBanner = this.guideBanner;
     snap.hasArmoryRedDot = hasArmoryRedDot;
     snap.skin = getSkinDef(save.equippedSkin);
     snap.level = this.currentLevel;
@@ -2431,10 +2491,12 @@ export class GameEngine {
     snap.comboTimer = this.comboTimer;
     snap.comboPulse = this.comboPulse;
     snap.isVictory = this.isVictory;
+    snap.justUnlockedEndless = this.justUnlockedEndless;
     snap.reviveProgressPct = Math.min(
       99,
       Math.round((this.elapsed / Math.max(1, this.currentLevel.duration)) * 100),
     );
+    snap.revivesRemaining = Math.max(0, AD_RULES.maxRevivesPerRun - this.revivesUsedThisRun);
     snap.resultClaimed = this.resultClaimed;
     snap.airdrop = this.airdrop;
     snap.save = save;
@@ -2447,6 +2509,11 @@ export class GameEngine {
     snap.canAfford.attack = this.saveManager.canUpgrade('attack');
     snap.canAfford.firerate = this.saveManager.canUpgrade('firerate');
     snap.canAfford.squad = this.saveManager.canUpgrade('squad');
+    this.saveManager.getCheapestUpgradeGap(
+      this.resultClaimed ? 0 : this.runCoins,
+      this.upgradeGapCache,
+    );
+    snap.upgradeGap = this.upgradeGapCache;
 
     this.renderer.render(snap, this.renderActions);
   }
