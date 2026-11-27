@@ -10,7 +10,7 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     name: '战术手枪',
     desc: '稳健点射，起步防线主力',
     iconKey: 'weapon_pistol',
-    damage: 11,
+    damage: 9.4,
     fireRate: 4.8,
     bulletSpeed: 1320,
     pellets: 1,

@@ -177,8 +177,10 @@ export class GameEngine {
       rot: 0,
       vrot: 0,
       dieLife: 0,
+      rageStage: 0,
+      rageTimer: 0,
     }),
-    150,
+    160,
   );
 
   private readonly barrelPool = new ObjectPool<Barrel>(
@@ -214,6 +216,7 @@ export class GameEngine {
       pairId: 0,
       used: false,
       hitFlash: 0,
+      hitAccum: 0,
     }),
     16,
   );
@@ -575,16 +578,22 @@ export class GameEngine {
     this.zombieTimer -= dt;
     if (this.zombieTimer <= 0) {
       this.spawnZombieWave();
-      const p = Math.min(1, this.elapsed / lv.duration);
-      this.zombieTimer = this.bossSpawned
-        ? 3.2
-        : Math.max(0.85, 2.05 - p * 0.95 - (Math.min(5, lv.id) - 1) * 0.08);
+      if (this.bossSpawned) {
+        this.zombieTimer = 2.8;
+      } else if (this.elapsed < 12) {
+        this.zombieTimer = Math.max(1.75, 2.05 - (this.elapsed / 12) * 0.25);
+      } else {
+        const p = Math.min(1, this.elapsed / lv.duration);
+        const ramp = Math.min(1, (this.elapsed - 12) / Math.max(10, lv.duration - 12));
+        const baseInterval = Math.max(0.85, 2.05 - p * 0.95 - (Math.min(5, lv.id) - 1) * 0.08);
+        this.zombieTimer = Math.max(0.62, baseInterval * (1 - 0.25 * ramp));
+      }
     }
 
     this.barrelTimer -= dt;
     if (this.barrelTimer <= 0) {
       this.spawnBarrel();
-      this.barrelTimer = 4.5 + Math.random() * 1.6;
+      this.barrelTimer = 4.6 + Math.random() * 1.5;
     }
 
     this.gateTimer -= dt;
@@ -608,8 +617,8 @@ export class GameEngine {
   private fireSquad(): void {
     const w = WEAPONS[this.weaponId];
     const skin = getSkinDef(this.saveManager.getData().equippedSkin);
-    const shooters = Math.min(this.squadCount, 7);
-    const overflowMult = this.squadCount > 7 ? 1 + (this.squadCount - 7) * 0.15 : 1;
+    const shooters = Math.min(this.squadCount, 8);
+    const overflowMult = this.squadCount > 8 ? 1 + (this.squadCount - 8) * 0.08 : 1;
     const totalDmgMult =
       overflowMult *
       this.saveManager.getAttackMultiplier() *
@@ -640,14 +649,26 @@ export class GameEngine {
     this.sdk.playSound(w.id);
   }
 
-  private spawnZombieWave(): void {
-    if (this.zombiePool.activeCount >= 95) return;
+  private spawnZombieWave(
+    overrideLaneX?: number,
+    overrideCount?: number,
+    overrideBaseY?: number,
+  ): void {
+    if (this.zombiePool.activeCount >= 125) return;
     const lv = this.currentLevel;
     const prog = Math.min(1, this.elapsed / lv.duration);
+    const ramp = this.elapsed >= 12 ? Math.min(1, (this.elapsed - 12) / Math.max(10, lv.duration - 12)) : 0;
+    const extraCount = this.elapsed >= 12 ? 2 + Math.floor(ramp * 2.4) : 0;
     const count =
-      3 + Math.floor(prog * 6) + Math.floor(Math.min(6, lv.id) * 0.6) + Math.floor(Math.random() * 2);
+      overrideCount ??
+      3 +
+        Math.floor(prog * 5) +
+        extraCount +
+        Math.floor(Math.min(6, lv.id) * 0.5) +
+        Math.floor(Math.random() * 2);
     const baseHp = Math.floor((20 + prog * 54) * lv.hpMult);
-    const cx = ROAD_LEFT + 55 + Math.random() * (ROAD_W - 110);
+    const cx = overrideLaneX ?? ROAD_LEFT + 55 + Math.random() * (ROAD_W - 110);
+    const spreadX = overrideLaneX !== undefined ? 75 : 145;
 
     for (let i = 0; i < count; i++) {
       const z = this.zombiePool.acquire();
@@ -658,13 +679,13 @@ export class GameEngine {
       let scale = 1.0;
       let radius = 28;
 
-      if (prog > 0.14 && r < lv.runnerRate) {
+      if (prog > 0.12 && r < lv.runnerRate) {
         kind = 'runner';
-        hp = Math.floor(baseHp * 0.75);
-        speed = 205 + prog * 58;
+        hp = Math.floor(baseHp * 0.78);
+        speed = Math.round((205 + prog * 58) * 1.18);
         scale = 0.96;
         radius = 26;
-      } else if (prog > 0.26 && r > 1 - lv.tankRate) {
+      } else if (prog > 0.24 && r > 1 - lv.tankRate) {
         kind = 'tank';
         hp = Math.floor(baseHp * 2.6);
         speed = 86 + prog * 22;
@@ -687,9 +708,38 @@ export class GameEngine {
       z.vy = 0;
       z.vrot = 0;
       z.dieLife = 0;
-      z.x = clamp(cx + (Math.random() - 0.5) * 145, ROAD_LEFT + 30, ROAD_RIGHT - 30);
-      z.y = -55 - Math.random() * 120;
+      z.rageStage = 0;
+      z.rageTimer = 0;
+      z.x = clamp(cx + (Math.random() - 0.5) * spreadX, ROAD_LEFT + 30, ROAD_RIGHT - 30);
+      z.y = (overrideBaseY ?? -55) - Math.random() * 115;
     }
+  }
+
+  private spawnFlankRunner(x: number, y: number): void {
+    if (this.zombiePool.activeCount >= 138) return;
+    const lv = this.currentLevel;
+    const prog = Math.min(1, this.elapsed / lv.duration);
+    const baseHp = Math.floor((20 + prog * 54) * lv.hpMult);
+    const z = this.zombiePool.acquire();
+    z.kind = 'runner';
+    z.hp = Math.floor(baseHp * 0.75);
+    z.maxHp = z.hp;
+    z.speed = Math.round((215 + prog * 58) * 1.18);
+    z.scale = 0.96;
+    z.radius = 26;
+    z.isBoss = false;
+    z.hitFlash = 0;
+    z.phase = Math.random() * Math.PI * 2;
+    z.dying = false;
+    z.rot = 0;
+    z.vx = 0;
+    z.vy = 0;
+    z.vrot = 0;
+    z.dieLife = 0;
+    z.rageStage = 0;
+    z.rageTimer = 0;
+    z.x = clamp(x, ROAD_LEFT + 26, ROAD_RIGHT - 26);
+    z.y = y;
   }
 
   private spawnBoss(): void {
@@ -713,6 +763,8 @@ export class GameEngine {
     z.vy = 0;
     z.vrot = 0;
     z.dieLife = 0;
+    z.rageStage = 0;
+    z.rageTimer = 0;
     this.bossRef = z;
 
     this.addShake(14, 0.38);
@@ -720,11 +772,10 @@ export class GameEngine {
     this.showToast(`警告：${lv.bossName}来袭，全队集火`, '#f87171');
   }
 
-  private spawnBarrel(): void {
+  private spawnSingleBarrel(laneX: number, y: number, forcedIdx?: number): number {
     const b = this.barrelPool.acquire();
     const lv = this.currentLevel;
     const prog = Math.min(1, this.elapsed / lv.duration);
-    const laneXs = [ROAD_LEFT + ROAD_W * 0.24, LOGICAL_WIDTH / 2, ROAD_LEFT + ROAD_W * 0.76];
 
     const picks: Array<{
       type: BarrelRewardType;
@@ -734,18 +785,23 @@ export class GameEngine {
       iconKey: Barrel['iconKey'];
       hpScale: number;
     }> = [
-      { type: 'weapon', weapon: 'shotgun', val: 1, label: '连发霰弹', iconKey: 'weapon_shotgun', hpScale: 1.0 },
-      { type: 'weapon', weapon: 'gatling', val: 1, label: '重型加特林', iconKey: 'weapon_gatling', hpScale: 1.3 },
-      { type: 'weapon', weapon: 'rocket', val: 1, label: '高爆火箭筒', iconKey: 'weapon_rocket', hpScale: 1.4 },
-      { type: 'squad', weapon: 'pistol', val: 2, label: '队友 +2', iconKey: '', hpScale: 0.9 },
-      { type: 'squad', weapon: 'pistol', val: 3, label: '队友 +3', iconKey: '', hpScale: 1.18 },
-      { type: 'rate', weapon: 'pistol', val: 0.2, label: '射速 +20%', iconKey: '', hpScale: 1.0 },
+      { type: 'weapon', weapon: 'shotgun', val: 1, label: '连发霰弹', iconKey: 'weapon_shotgun', hpScale: 1.52 },
+      { type: 'weapon', weapon: 'gatling', val: 1, label: '重型加特林', iconKey: 'weapon_gatling', hpScale: 1.70 },
+      { type: 'weapon', weapon: 'rocket', val: 1, label: '高爆火箭筒', iconKey: 'weapon_rocket', hpScale: 1.72 },
+      { type: 'squad', weapon: 'pistol', val: 2, label: '队友 +2', iconKey: '', hpScale: 1.40 },
+      { type: 'squad', weapon: 'pistol', val: 3, label: '队友 +3', iconKey: '', hpScale: 1.56 },
+      { type: 'rate', weapon: 'pistol', val: 0.2, label: '射速 +20%', iconKey: '', hpScale: 1.42 },
     ];
-    const pick = picks[Math.floor(Math.random() * picks.length)];
-    const hp = Math.max(12, Math.floor((22 + prog * 115) * pick.hpScale * (0.85 + lv.hpMult * 0.35)));
+    const idx = forcedIdx !== undefined ? forcedIdx % picks.length : Math.floor(Math.random() * picks.length);
+    const pick = picks[idx];
+    const earlySoft = this.elapsed < 8 ? 0.82 : 1.0;
+    const hp = Math.max(
+      18,
+      Math.floor((22 + prog * 115) * pick.hpScale * earlySoft * (0.85 + lv.hpMult * 0.35)),
+    );
 
-    b.x = laneXs[Math.floor(Math.random() * laneXs.length)];
-    b.y = -75;
+    b.x = laneX;
+    b.y = y;
     b.hp = hp;
     b.maxHp = hp;
     b.speed = 148 + prog * 24;
@@ -757,6 +813,25 @@ export class GameEngine {
     b.iconKey = pick.iconKey;
     b.hitScale = 1;
     b.hitFlash = 0;
+    return idx;
+  }
+
+  private spawnBarrel(): void {
+    const laneXs = [ROAD_LEFT + ROAD_W * 0.24, LOGICAL_WIDTH / 2, ROAD_LEFT + ROAD_W * 0.76];
+    if (this.elapsed >= 10 && !this.bossSpawned && Math.random() < 0.35) {
+      if (Math.random() < 0.5) {
+        // 左右并列双木桶，诱发路径取舍
+        const firstIdx = this.spawnSingleBarrel(laneXs[0], -75);
+        this.spawnSingleBarrel(laneXs[2], -75, firstIdx + 1 + Math.floor(Math.random() * 4));
+      } else {
+        // 一侧木桶 + 对侧丧尸群组合，强迫玩家抉择打桶或清怪
+        const barrelOnLeft = Math.random() < 0.5;
+        this.spawnSingleBarrel(barrelOnLeft ? laneXs[0] : laneXs[2], -75);
+        this.spawnZombieWave(barrelOnLeft ? laneXs[2] : laneXs[0], 3 + Math.floor(Math.random() * 2), -85);
+      }
+      return;
+    }
+    this.spawnSingleBarrel(laneXs[Math.floor(Math.random() * laneXs.length)], -75);
   }
 
   private spawnGatePair(): void {
@@ -777,12 +852,64 @@ export class GameEngine {
       g.pairId = pairId;
       g.used = false;
       g.hitFlash = 0;
+      g.hitAccum = 0;
       if (cfgs[i].positive) {
         g.kind = Math.random() > 0.35 ? 'squad' : 'rate';
-        g.value = g.kind === 'squad' ? 1 + Math.floor(Math.random() * 3) : 18;
+        g.value = g.kind === 'squad' ? 1 + Math.floor(Math.random() * 2) : 15;
       } else {
         g.kind = 'squad';
-        g.value = -(2 + Math.floor(Math.random() * 3));
+        g.value = -(4 + Math.floor(Math.random() * 4));
+      }
+    }
+  }
+
+  private applyZombieDamage(
+    z: Zombie,
+    rawDamage: number,
+    isCrit: boolean,
+    isSplash: boolean,
+    hitX: number,
+    hitY: number,
+  ): number {
+    let finalDmg = rawDamage;
+    if (!isCrit && !isSplash && z.kind === 'tank') {
+      finalDmg = rawDamage * 0.7;
+      this.spawnParticles(hitX, hitY, '#93c5fd', 3, 120, 5);
+    }
+
+    z.hp -= finalDmg;
+    z.hitFlash = isCrit ? 0.11 : 0.08;
+
+    if (z.hp <= 0) {
+      this.killZombie(z, isCrit || isSplash || this.weaponId === 'shotgun');
+    } else if (z.isBoss) {
+      this.checkBossRage(z);
+    }
+    return finalDmg;
+  }
+
+  private checkBossRage(boss: Zombie): void {
+    const ratio = boss.hp / Math.max(1, boss.maxHp);
+    if (boss.rageStage < 1 && ratio <= 0.65) {
+      this.triggerBossRage(boss, 1);
+    } else if (boss.rageStage < 2 && ratio <= 0.3) {
+      this.triggerBossRage(boss, 2);
+    }
+  }
+
+  private triggerBossRage(boss: Zombie, stage: number): void {
+    boss.rageStage = stage;
+    boss.rageTimer = 4.0;
+    this.addShake(16, 0.45);
+    this.sdk.playSound('boss_alert');
+    this.sdk.vibrate('heavy');
+    this.showToast('尸王狂暴！召唤尸潮！', '#ef4444', 2.4);
+
+    for (let side = 0; side < 2; side++) {
+      const baseX = side === 0 ? ROAD_LEFT + 34 : ROAD_RIGHT - 34;
+      const dir = side === 0 ? 1 : -1;
+      for (let k = 0; k < 4; k++) {
+        this.spawnFlankRunner(baseX + dir * k * 14, Math.max(40, boss.y + 15 + k * 28));
       }
     }
   }
@@ -849,12 +976,23 @@ export class GameEngine {
 
       let hit = false;
 
-      // 1) 红蓝能量门
+      // 1) 红蓝能量门（加大负门转化门槛，避免白嫖）
       this.gatePool.forEachActive((g) => {
         if (hit || g.used) return;
         if (Math.abs(b.x - g.x) < g.w / 2 && Math.abs(b.y - g.y) < g.h / 2) {
-          g.value += g.kind === 'rate' ? 2 : 1;
           g.hitFlash = 0.08;
+          g.hitAccum += 1;
+          const needHits = g.kind === 'rate' ? 3 : g.value < 0 ? 3 : 4;
+          if (g.hitAccum >= needHits) {
+            g.hitAccum = 0;
+            const prev = g.value;
+            g.value += g.kind === 'rate' ? 3 : 1;
+            if (prev < 0 && g.value >= 0) {
+              if (g.value === 0) g.value = 1;
+              this.sdk.playSound('gate_pos');
+              this.spawnFloatText(g.x, g.y - 44, '逆转增益', '#60a5fa', 26);
+            }
+          }
           this.spawnParticles(b.x, b.y, g.value >= 0 ? '#38bdf8' : '#ff6b6b', 3, 95, 5);
           hit = true;
         }
@@ -915,18 +1053,15 @@ export class GameEngine {
               const sdx = sz.x - b.x;
               const sdy = sz.y - b.y;
               if (sdx * sdx + sdy * sdy <= b.splash * b.splash) {
-                sz.hp -= b.damage;
-                sz.hitFlash = 0.08;
-                if (sz.hp <= 0) this.killZombie(sz, true);
+                this.applyZombieDamage(sz, b.damage, false, true, b.x, b.y);
               }
             });
           } else {
             const critRate = this.combo >= 25 ? 0.36 : this.combo >= 10 ? 0.28 : 0.2;
             const isCrit = Math.random() < critRate;
-            const finalDmg = isCrit ? b.damage * 2.0 : b.damage;
-            z.hp -= finalDmg;
-            z.hitFlash = isCrit ? 0.11 : 0.08;
+            const rawDmg = isCrit ? b.damage * 2.0 : b.damage;
             if (!z.isBoss) z.y -= isCrit ? 10 : 5;
+            const dealt = this.applyZombieDamage(z, rawDmg, isCrit, false, b.x, b.y);
             if (isCrit) {
               this.addShake(5.5, 0.09);
               this.sdk.playSound('crit');
@@ -934,15 +1069,12 @@ export class GameEngine {
               this.spawnFloatText(
                 z.x + (Math.random() - 0.5) * 24,
                 z.y - 44,
-                `暴击 ${Math.round(finalDmg)}`,
+                `暴击 ${Math.round(dealt)}`,
                 '#fde047',
                 27,
               );
-            } else {
+            } else if (z.kind !== 'tank') {
               this.spawnParticles(b.x, b.y, '#7bed9f', 2, 110, 5);
-            }
-            if (z.hp <= 0) {
-              this.killZombie(z, isCrit || this.weaponId === 'shotgun');
             }
           }
           hit = true;
@@ -1043,11 +1175,19 @@ export class GameEngine {
         return;
       }
 
-      z.phase += dt * (z.kind === 'runner' ? 13 : 7.5);
-      z.y += z.speed * dt;
+      z.phase += dt * (z.kind === 'runner' ? 14.5 : 7.5);
+      const speedMult = z.isBoss && z.rageTimer > 0 ? 1.3 : 1.0;
+      if (z.rageTimer > 0) z.rageTimer = Math.max(0, z.rageTimer - dt);
+      z.y += z.speed * speedMult * dt;
       if (z.hitFlash > 0) z.hitFlash -= dt;
-      if (z.y > 700) {
-        z.x += Math.sign(this.squadX - z.x) * (z.isBoss ? 48 : 66) * dt;
+
+      if (z.kind === 'runner' && z.y > 420) {
+        const diff = this.squadX - z.x;
+        if (Math.abs(diff) > 4) {
+          z.x = clamp(z.x + Math.sign(diff) * Math.min(Math.abs(diff), 128 * dt), ROAD_LEFT + 24, ROAD_RIGHT - 24);
+        }
+      } else if (z.y > 700) {
+        z.x += Math.sign(this.squadX - z.x) * (z.isBoss ? 52 : 66) * dt;
       }
 
       const dx = z.x - this.squadX;

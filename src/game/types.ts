@@ -109,6 +109,8 @@ export interface Zombie extends PoolItem {
   rot: number;
   vrot: number;
   dieLife: number;
+  rageStage: number;
+  rageTimer: number;
 }
 
 export interface Barrel extends PoolItem {
@@ -138,6 +140,7 @@ export interface Gate extends PoolItem {
   pairId: number;
   used: boolean;
   hitFlash: number;
+  hitAccum: number;
 }
 
 export interface Particle extends PoolItem {

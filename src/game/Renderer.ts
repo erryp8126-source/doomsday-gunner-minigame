@@ -343,6 +343,17 @@ export class Renderer {
       ctx.ellipse(0, drawH * 0.42, drawW * 0.36, drawH * 0.13, 0, 0, Math.PI * 2);
       ctx.fill();
 
+      if (z.isBoss && z.rageTimer > 0) {
+        const ragePulse = 1 + Math.sin(snap.clock * 16) * 0.08;
+        ctx.save();
+        ctx.strokeStyle = 'rgba(239, 68, 68, 0.85)';
+        ctx.lineWidth = 6;
+        ctx.beginPath();
+        ctx.arc(0, 0, 108 * ragePulse, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+
       const wobbleRot = Math.sin(z.phase) * (z.isBoss ? 0.06 : 0.13);
       const squashY = 1 + Math.abs(Math.sin(z.phase)) * 0.06;
       const squashX = 1 / squashY;
@@ -476,7 +487,7 @@ export class Renderer {
         ctx.fill();
       }
 
-      if (snap.muzzleFlash > 0 && i < 7 && snap.state === 'PLAYING') {
+      if (snap.muzzleFlash > 0 && i < 8 && snap.state === 'PLAYING') {
         ctx.fillStyle = snap.weapon.color;
         ctx.beginPath();
         ctx.arc(16, -54, 11 + Math.random() * 6, 0, Math.PI * 2);
