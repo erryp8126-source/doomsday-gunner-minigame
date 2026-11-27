@@ -7,10 +7,6 @@ import {
 } from '../config/adConfig';
 import { LOGICAL_HEIGHT, LOGICAL_WIDTH } from '../game/types';
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
-declare const wx: any;
-declare const tt: any;
-
 export type SoundEffectName =
   | 'pistol'
   | 'shotgun'
@@ -85,7 +81,7 @@ export interface WebSimulatorBridge {
 export type AudioBucketKey = 'shot' | 'shotgun' | 'break' | 'explosion' | 'crit' | 'gate';
 
 interface AudioBucketState {
-  instances: any[];
+  instances: MinigameInnerAudioContext[];
   cursor: number;
   lastPlayedMs: number;
 }
@@ -133,15 +129,15 @@ export class PlatformSDK {
   private webSoundPlayer: SoundPlayerFn | null = null;
   private webAudioStateFn: AudioStateFn | null = null;
 
-  private wxRewardedAd: any = null;
-  private ttRewardedAd: any = null;
+  private wxRewardedAd: MinigameRewardedVideoAd | null = null;
+  private ttRewardedAd: MinigameRewardedVideoAd | null = null;
   private pendingRewardResolve: ((res: RewardedAdResult) => void) | null = null;
   private activeRewardScene: RewardedScene | null = null;
 
-  private bannerAd: any = null;
-  private interstitialAd: any = null;
+  private bannerAd: MinigameBannerAd | null = null;
+  private interstitialAd: MinigameInterstitialAd | null = null;
 
-  private ttRecorder: any = null;
+  private ttRecorder: DouyinGameRecorderManager | null = null;
   private recordingActive = false;
   private recordStartMs = 0;
   private lastVideoPath = '';
@@ -153,7 +149,7 @@ export class PlatformSDK {
   private readonly sidebarStatusCache: SidebarStatus = { supported: false, fromSidebar: false };
 
   /** 小游戏端 InnerAudioContext 实例池（按音效桶各复用 3 个实例并做 55ms/90ms 节流） */
-  private readonly minigameAudioPool: any[] = [];
+  private readonly minigameAudioPool: MinigameInnerAudioContext[] = [];
   private readonly minigameAudioBuckets = new Map<AudioBucketKey, AudioBucketState>();
   private readonly minigameLastSoundMs = new Map<SoundEffectName, number>();
   private readonly memoryStorage = new Map<string, string>();
@@ -265,7 +261,7 @@ export class PlatformSDK {
           },
         });
       }
-      const checkLaunch = (opt: any) => {
+      const checkLaunch = (opt?: MinigameLaunchOptions) => {
         if (!opt) return;
         if (opt.launch_from === 'homepage' || opt.location === 'sidebar_card') {
           this.launchedFromSidebar = true;
@@ -274,7 +270,7 @@ export class PlatformSDK {
       if (typeof tt.getLaunchOptionsSync === 'function') {
         checkLaunch(tt.getLaunchOptionsSync());
       }
-      tt.onShow?.((res: any) => {
+      tt.onShow?.((res?: MinigameLaunchOptions) => {
         checkLaunch(res);
       });
     } catch {
@@ -335,7 +331,11 @@ export class PlatformSDK {
     return this.safeInsetsCache;
   }
 
-  private computeCapsuleSafeTopLogical(api: any, info: any, safeTopPxFallback: number): number {
+  private computeCapsuleSafeTopLogical(
+    api: MinigameCommonAPI,
+    info: MinigameSystemInfo,
+    safeTopPxFallback: number,
+  ): number {
     const winH = Math.max(1, info?.windowHeight || 844);
     const scaleY = LOGICAL_HEIGHT / winH;
     let menuBottomPx = 0;
@@ -483,15 +483,15 @@ export class PlatformSDK {
 
     if (this.runtime === 'wechat' || this.runtime === 'douyin') {
       const api = this.runtime === 'douyin' ? tt : wx;
-      const onTS = (e: any) => {
+      const onTS = (e: MinigameTouchEvent) => {
         const t = e.changedTouches?.[0] || e.touches?.[0];
         if (t) handleDown(t.clientX, t.clientY);
       };
-      const onTM = (e: any) => {
+      const onTM = (e: MinigameTouchEvent) => {
         const t = e.changedTouches?.[0] || e.touches?.[0];
         if (t) handleMove(t.clientX, t.clientY);
       };
-      const onTE = (e: any) => {
+      const onTE = (e: MinigameTouchEvent) => {
         const t = e.changedTouches?.[0];
         if (t) handleUp(t.clientX, t.clientY);
         else {
@@ -704,9 +704,10 @@ export class PlatformSDK {
       }
     }
     if (this.runtime === 'douyin' && typeof tt.shareAppMessage === 'function') {
+      const shareAppMessage = tt.shareAppMessage;
       return new Promise((resolve) => {
         try {
-          tt.shareAppMessage({
+          shareAppMessage({
             title: shareTitle,
             imageUrl: 'assets/sprites/bg_road.jpg',
             success: () => resolve({ shared: true, message: '分享战绩成功' }),
@@ -768,9 +769,10 @@ export class PlatformSDK {
       return Promise.resolve({ shared: true, message: '已在浏览器模拟发布高光视频' });
     }
     if (this.runtime === 'douyin' && typeof tt.shareAppMessage === 'function') {
+      const shareAppMessage = tt.shareAppMessage;
       return new Promise((resolve) => {
         try {
-          tt.shareAppMessage({
+          shareAppMessage({
             channel: 'video',
             title: shareTitle,
             extra: {
@@ -884,7 +886,7 @@ export class PlatformSDK {
     this.minigameLastSoundMs.set(name, nowMs);
     bucket.lastPlayedMs = nowMs;
 
-    let ctx: any;
+    let ctx: MinigameInnerAudioContext;
     if (bucket.instances.length < AUDIO_POOL_SIZE_PER_BUCKET) {
       ctx = api.createInnerAudioContext();
       ctx.src = spec.src;
@@ -1054,6 +1056,7 @@ export class PlatformSDK {
           },
         });
         this.bannerAd.onResize((size: { width: number; height: number }) => {
+          if (!this.bannerAd) return;
           this.bannerAd.style.left = (vp.width - size.width) / 2;
           this.bannerAd.style.top = vp.height - vp.safeAreaBottom - size.height;
         });
@@ -1079,6 +1082,7 @@ export class PlatformSDK {
           },
         });
         this.bannerAd.onResize((size: { width: number; height: number }) => {
+          if (!this.bannerAd) return;
           this.bannerAd.style.left = (vp.width - size.width) / 2;
           this.bannerAd.style.top = vp.height - vp.safeAreaBottom - size.height;
         });
@@ -1110,9 +1114,10 @@ export class PlatformSDK {
         this.interstitialAd = wx.createInterstitialAd({ adUnitId });
         this.interstitialAd.onError(() => {});
       }
-      return this.interstitialAd
+      const ad = this.interstitialAd;
+      return ad
         .show()
-        .catch(() => this.interstitialAd.load().then(() => this.interstitialAd.show()))
+        .catch(() => ad.load().then(() => ad.show()))
         .then(() => ({ shown: true, reason: 'shown' as const }))
         .catch(() => ({ shown: false, reason: 'load_failed' as const }));
     }
@@ -1126,9 +1131,10 @@ export class PlatformSDK {
         this.interstitialAd = tt.createInterstitialAd({ adUnitId });
         this.interstitialAd.onError(() => {});
       }
-      return this.interstitialAd
+      const ad = this.interstitialAd;
+      return ad
         .load()
-        .then(() => this.interstitialAd.show())
+        .then(() => ad.show())
         .then(() => ({ shown: true, reason: 'shown' as const }))
         .catch(() => ({ shown: false, reason: 'load_failed' as const }));
     }

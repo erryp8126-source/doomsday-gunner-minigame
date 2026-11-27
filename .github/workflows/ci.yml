@@ -1,0 +1,32 @@
+name: 游戏逻辑单测与双端合规构建
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 运行零依赖逻辑单测
+        run: npm test
+
+      - name: 双端小游戏构建（微信 wx + 抖音 tt）
+        run: npm run build:minigame
+
+      - name: 合规与零英文 / 零 DOM 红线审计
+        run: npm run audit

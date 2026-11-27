@@ -87,27 +87,48 @@ export function getLevelConfig(levelId: number): LevelConfig {
 }
 
 /**
+ * 无尽模式普通波次血量倍率平滑分段曲线（避免第 10 波后指数爆炸）
+ * 1~6 波线性温和抬升；7 波起叠加缓坡增长，第 15 波约 7.19 倍，第 25 波约 15.01 倍。
+ */
+export function getEndlessWaveScale(wave: number): number {
+  const safeWave = Math.max(1, Math.floor(wave));
+  const base = 1 + (safeWave - 1) * 0.22;
+  const late = safeWave > 6 ? Math.pow(safeWave - 6, 1.38) * 0.15 : 0;
+  return Number((base + late).toFixed(2));
+}
+
+/**
+ * 无尽模式熔岩尸王 Boss 血量平滑层级曲线
+ */
+export function getEndlessBossHp(tier: number): number {
+  const safeTier = Math.max(1, Math.floor(tier));
+  const mult =
+    1 + (safeTier - 1) * 0.45 + Math.pow(Math.max(0, safeTier - 4), 1.25) * 0.28;
+  return Math.round(2600 * mult);
+}
+
+/**
  * 无尽狂潮模式动态波次生成器（每 40 秒推进 1 波，偶数波登场强化版熔岩尸王）
  */
 export function getEndlessWaveConfig(wave: number): LevelConfig {
   const safeWave = Math.max(1, Math.floor(wave));
   const wOffset = safeWave - 1;
   const themeBase = LEVELS[wOffset % LEVELS.length];
-  const bossTier = Math.max(0, Math.floor(safeWave / 2) - 1);
+  const bossTier = Math.max(1, Math.floor(safeWave / 2));
 
   return {
     id: safeWave,
     name: '无尽狂潮',
     subtitle: `第${safeWave}波狂潮`,
     duration: 40,
-    hpMult: Number((1.25 * Math.pow(1.32, wOffset)).toFixed(2)),
-    bossHp: Math.round(2800 * Math.pow(1.42, bossTier)),
+    hpMult: getEndlessWaveScale(safeWave),
+    bossHp: getEndlessBossHp(bossTier),
     bossName: `${themeBase.bossName}`,
     bossFireballMin: safeWave >= 4 ? 4 : safeWave >= 3 ? 3 : 2,
     bossFireballMax: safeWave >= 4 ? 4 : 3,
     bossPatrolSpeed: Math.min(170, 105 + wOffset * 12),
     runnerRate: Math.min(0.46, 0.24 + wOffset * 0.04),
     tankRate: Math.min(0.38, 0.16 + wOffset * 0.04),
-    clearCoins: Math.round(80 * Math.pow(1.22, wOffset)),
+    clearCoins: Math.round(80 + wOffset * 22 + Math.max(0, wOffset - 5) * 12),
   };
 }
