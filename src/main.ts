@@ -26,6 +26,8 @@ function bootstrap(): void {
         adManager.resetTracking();
         engineRef?.syncSaveAfterReset();
       },
+      getPerfMetrics: () => engineRef?.getPerfMetrics() ?? null,
+      onStartStressTest: () => engineRef?.startStressTest(),
     });
     sdk.registerWebBridge(bridge);
   }

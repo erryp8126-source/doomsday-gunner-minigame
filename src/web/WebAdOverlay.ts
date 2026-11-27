@@ -1,10 +1,20 @@
 import type { RewardedScene } from '../config/adConfig';
+import type { PerfMetrics } from '../game/GameEngine';
 import type { AdManager } from '../sdk/AdManager';
 import type { InterstitialAdResult, RewardedAdResult, WebSimulatorBridge } from '../sdk/PlatformSDK';
 
 export interface WebOverlayHooks {
   onResetSave: () => void;
+  getPerfMetrics?: () => PerfMetrics | null;
+  onStartStressTest?: () => void;
 }
+
+const WEAPON_LABEL_MAP: Record<string, string> = {
+  pistol: '手枪',
+  shotgun: '霰弹',
+  gatling: '加特林',
+  rocket: '火箭筒',
+};
 
 const SCENE_TITLES: Record<RewardedScene, string> = {
   pre_battle_boost: '开局神装支援（加特林+5人）',
@@ -91,8 +101,14 @@ export function mountWebAdOverlay(
         <label for="iaa-fail-toggle">强制广告加载失败</label>
         <input id="iaa-fail-toggle" type="checkbox" />
       </div>
+      <div class="iaa-row">
+        <label for="iaa-perf-toggle">实时性能监控 (FPS / 实体)</label>
+        <input id="iaa-perf-toggle" type="checkbox" checked />
+      </div>
+      <div class="iaa-card" data-role="perf-card"></div>
       <div class="iaa-card" data-role="cooldown-card"></div>
       <div class="iaa-card" data-role="stats-card"></div>
+      <button type="button" class="iaa-stress-btn" data-role="btn-stress">⚡ 极限压测（加特林+10人+尸王狂暴）</button>
       <button type="button" class="iaa-reset-btn" data-role="btn-reset">一键重置本地存档</button>
     </div>
   `;
@@ -102,8 +118,11 @@ export function mountWebAdOverlay(
   const debugToggle = debugEl.querySelector('[data-role="debug-toggle"]') as HTMLButtonElement;
   const platBtns = Array.from(debugEl.querySelectorAll('button[data-plat]')) as HTMLButtonElement[];
   const failCheckbox = debugEl.querySelector('#iaa-fail-toggle') as HTMLInputElement;
+  const perfCheckbox = debugEl.querySelector('#iaa-perf-toggle') as HTMLInputElement;
+  const perfCard = debugEl.querySelector('[data-role="perf-card"]') as HTMLElement;
   const cooldownCard = debugEl.querySelector('[data-role="cooldown-card"]') as HTMLElement;
   const statsCard = debugEl.querySelector('[data-role="stats-card"]') as HTMLElement;
+  const stressBtn = debugEl.querySelector('[data-role="btn-stress"]') as HTMLButtonElement;
   const resetBtn = debugEl.querySelector('[data-role="btn-reset"]') as HTMLButtonElement;
 
   debugHeader.addEventListener('click', () => {
@@ -122,9 +141,41 @@ export function mountWebAdOverlay(
     adManager.setForceFail(failCheckbox.checked);
   });
 
+  stressBtn.addEventListener('click', () => {
+    hooks.onStartStressTest?.();
+  });
+
   resetBtn.addEventListener('click', () => {
     hooks.onResetSave();
   });
+
+  (window as unknown as Record<string, unknown>).__PERF__ = () => hooks.getPerfMetrics?.() ?? null;
+
+  const refreshPerfCard = () => {
+    if (!perfCheckbox.checked) {
+      perfCard.style.display = 'none';
+      return;
+    }
+    perfCard.style.display = 'flex';
+    const perf = hooks.getPerfMetrics?.();
+    if (!perf) {
+      perfCard.innerHTML = '<div class="iaa-row"><span>性能监控</span><span>等待初始化...</span></div>';
+      return;
+    }
+    const fpsClass =
+      perf.fps >= 55 ? 'iaa-stat-good' : perf.fps >= 45 ? 'iaa-stat-warn' : 'iaa-stat-bad';
+    const weaponLabel = WEAPON_LABEL_MAP[perf.weaponId] || perf.weaponId;
+    perfCard.innerHTML = `
+      <div class="iaa-row"><span>实时 FPS / DPR</span><span class="${fpsClass}">${perf.fps} FPS (${perf.dpr.toFixed(1)}x)</span></div>
+      <div class="iaa-row"><span>帧间隔 均/峰</span><span class="iaa-stat-val">${perf.avgFrameMs} / ${perf.maxFrameMs} ms</span></div>
+      <div class="iaa-row"><span>JS 耗时 均/峰</span><span class="iaa-stat-val">${perf.avgWorkMs} / ${perf.maxWorkMs} ms</span></div>
+      <div class="iaa-row"><span>子弹 / 粒子 / 飘字</span><span class="iaa-stat-val">${perf.bullets}/120 · ${perf.particles}/80 · ${perf.texts}/18</span></div>
+      <div class="iaa-row"><span>丧尸 / 桶 / 门</span><span>${perf.zombies} · ${perf.barrels} · ${perf.gates}</span></div>
+      <div class="iaa-row"><span>小队 / 当前武器</span><span class="iaa-stat-warn">${perf.squadCount} 人 · ${weaponLabel}</span></div>
+    `;
+  };
+
+  perfCheckbox.addEventListener('change', refreshPerfCard);
 
   const refreshDebugPanel = () => {
     const snap = adManager.getDebugSnapshot();
@@ -158,7 +209,9 @@ export function mountWebAdOverlay(
 
   adManager.subscribe(refreshDebugPanel);
   window.setInterval(refreshDebugPanel, 500);
+  window.setInterval(refreshPerfCard, 250);
   refreshDebugPanel();
+  refreshPerfCard();
 
   let activeTimer: number | null = null;
 

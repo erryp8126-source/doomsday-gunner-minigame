@@ -14,22 +14,84 @@ export interface ButtonStyle {
   pulseScale?: number;
 }
 
+const GRADIENT_CACHE = new WeakMap<CanvasRenderingContext2D, Map<string, CanvasGradient>>();
+const MAX_CACHED_GRADIENTS = 128;
+
+function getCachedLinearGradient(
+  ctx: CanvasRenderingContext2D,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  c0: string,
+  c1: string,
+  cMid?: string,
+): CanvasGradient {
+  let cache = GRADIENT_CACHE.get(ctx);
+  if (!cache) {
+    cache = new Map<string, CanvasGradient>();
+    GRADIENT_CACHE.set(ctx, cache);
+  }
+  const rx0 = Math.round(x0);
+  const ry0 = Math.round(y0);
+  const rx1 = Math.round(x1);
+  const ry1 = Math.round(y1);
+  const key = `${rx0}_${ry0}_${rx1}_${ry1}_${c0}_${cMid ?? ''}_${c1}`;
+  let grad = cache.get(key);
+  if (!grad) {
+    if (cache.size >= MAX_CACHED_GRADIENTS) {
+      cache.clear();
+    }
+    grad = ctx.createLinearGradient(x0, y0, x1, y1);
+    grad.addColorStop(0, c0);
+    if (cMid !== undefined) {
+      grad.addColorStop(0.5, cMid);
+    }
+    grad.addColorStop(1, c1);
+    cache.set(key, grad);
+  }
+  return grad;
+}
+
 /**
- * 纯 Canvas UI 渲染与点击碰撞注册器（零 DOM 依赖）
+ * 纯 Canvas UI 渲染与点击碰撞注册器（零 DOM 依赖，复用槽位避免每帧分配）
  */
 export class HitBoxRegistry {
   private readonly boxes: HitRect[] = [];
+  private activeCount = 0;
 
   public clear(): void {
-    this.boxes.length = 0;
+    this.activeCount = 0;
+  }
+
+  public registerRect(
+    id: string,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    onClick: () => void,
+  ): void {
+    if (this.activeCount < this.boxes.length) {
+      const slot = this.boxes[this.activeCount];
+      slot.id = id;
+      slot.x = x;
+      slot.y = y;
+      slot.w = w;
+      slot.h = h;
+      slot.onClick = onClick;
+    } else {
+      this.boxes.push({ id, x, y, w, h, onClick });
+    }
+    this.activeCount += 1;
   }
 
   public register(box: HitRect): void {
-    this.boxes.push(box);
+    this.registerRect(box.id, box.x, box.y, box.w, box.h, box.onClick);
   }
 
   public handleTap(x: number, y: number): boolean {
-    for (let i = this.boxes.length - 1; i >= 0; i--) {
+    for (let i = this.activeCount - 1; i >= 0; i--) {
       const b = this.boxes[i];
       if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) {
         b.onClick();
@@ -91,16 +153,10 @@ export function drawButton(
   drawRoundedRect(ctx, x, y + 6, w, h, radius);
   ctx.fill();
 
-  // 主体渐变
-  const grad = ctx.createLinearGradient(x, y, x, y + h);
-  if (style.disabled) {
-    grad.addColorStop(0, '#475569');
-    grad.addColorStop(1, '#334155');
-  } else {
-    grad.addColorStop(0, style.fillTop);
-    grad.addColorStop(1, style.fillBottom);
-  }
-  ctx.fillStyle = grad;
+  // 主体渐变（查缓存，严禁每帧新建 CanvasGradient）
+  ctx.fillStyle = style.disabled
+    ? getCachedLinearGradient(ctx, x, y, x, y + h, '#475569', '#334155')
+    : getCachedLinearGradient(ctx, x, y, x, y + h, style.fillTop, style.fillBottom);
   drawRoundedRect(ctx, x, y, w, h, radius);
   ctx.fill();
 
@@ -136,7 +192,7 @@ export function drawButton(
   ctx.restore();
 
   if (!style.disabled) {
-    registry.register({ id, x, y, w, h, onClick });
+    registry.registerRect(id, x, y, w, h, onClick);
   }
 }
 
@@ -185,10 +241,7 @@ export function drawPanelCard(
   drawRoundedRect(ctx, x, y + 10, w, h, 28);
   ctx.fill();
 
-  const grad = ctx.createLinearGradient(x, y, x, y + h);
-  grad.addColorStop(0, '#1e293b');
-  grad.addColorStop(1, '#0f172a');
-  ctx.fillStyle = grad;
+  ctx.fillStyle = getCachedLinearGradient(ctx, x, y, x, y + h, '#1e293b', '#0f172a');
   drawRoundedRect(ctx, x, y, w, h, 28);
   ctx.fill();
 
@@ -199,11 +252,7 @@ export function drawPanelCard(
 
   // 顶部标题丝带
   const headerH = 68;
-  const headerGrad = ctx.createLinearGradient(x, y, x + w, y);
-  headerGrad.addColorStop(0, '#0f172a');
-  headerGrad.addColorStop(0.5, accentColor);
-  headerGrad.addColorStop(1, '#0f172a');
-  ctx.fillStyle = headerGrad;
+  ctx.fillStyle = getCachedLinearGradient(ctx, x, y, x + w, y, '#0f172a', '#0f172a', accentColor);
   drawRoundedRect(ctx, x + 10, y + 10, w - 20, headerH, 20);
   ctx.fill();
 

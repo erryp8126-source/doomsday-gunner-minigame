@@ -71,6 +71,9 @@ export interface LevelConfig {
   hpMult: number;
   bossHp: number;
   bossName: string;
+  bossFireballMin: number;
+  bossFireballMax: number;
+  bossPatrolSpeed: number;
   runnerRate: number;
   tankRate: number;
   clearCoins: number;
@@ -163,6 +166,53 @@ export interface DamageText extends PoolItem {
   life: number;
   maxLife: number;
   size: number;
+}
+
+export interface BossFireball extends PoolItem {
+  startX: number;
+  startY: number;
+  targetX: number;
+  targetY: number;
+  radius: number;
+  timer: number;
+  duration: number;
+  explodeFlash: number;
+  exploded: boolean;
+}
+
+export type BossActionMode =
+  | 'ENTERING'
+  | 'PATROL'
+  | 'CHARGE_WARN'
+  | 'CHARGE_DASH'
+  | 'CHARGE_RETURN'
+  | 'STUNNED';
+
+export interface BossCombatState {
+  alertPending: boolean;
+  alertTimer: number;
+  alertDuration: number;
+  action: BossActionMode;
+  patrolDir: number;
+  patrolSpeed: number;
+  baseY: number;
+  advanceTimer: number;
+  fireballCd: number;
+  chargeCd: number;
+  chargeTargetX: number;
+  chargeHalfWidth: number;
+  chargeTimer: number;
+  chargeDuration: number;
+  chargeHitApplied: boolean;
+  chargeReturnY: number;
+  shieldTriggered: boolean;
+  shieldActive: boolean;
+  shieldHp: number;
+  shieldMaxHp: number;
+  shieldTimer: number;
+  shieldDuration: number;
+  stunTimer: number;
+  shockwaveFlash: number;
 }
 
 export interface AirdropCrate {

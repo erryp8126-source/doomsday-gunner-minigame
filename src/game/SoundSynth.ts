@@ -7,7 +7,7 @@ import type { SoundEffectName } from '../sdk/PlatformSDK';
 export class SoundSynth {
   private ctx: AudioContext | null = null;
   private suspended = false;
-  private lastShotTime = 0;
+  private readonly lastPlaySec = new Map<string, number>();
 
   private ensureContext(): AudioContext | null {
     if (this.suspended) return null;
@@ -39,10 +39,16 @@ export class SoundSynth {
     if (!ctx) return;
 
     const now = ctx.currentTime;
-    if (name === 'pistol' || name === 'shotgun' || name === 'gatling' || name === 'rocket') {
-      if (now - this.lastShotTime < 0.045) return;
-      this.lastShotTime = now;
+    const category =
+      name === 'pistol' || name === 'shotgun' || name === 'gatling' || name === 'rocket'
+        ? 'shot'
+        : name;
+    const minIntervalSec = name === 'crit' ? 0.09 : 0.055;
+    const prevSec = this.lastPlaySec.get(category) ?? -1;
+    if (prevSec >= 0 && now - prevSec < minIntervalSec) {
+      return;
     }
+    this.lastPlaySec.set(category, now);
 
     switch (name) {
       case 'gatling':
@@ -113,6 +119,10 @@ export class SoundSynth {
 
     osc.connect(gain);
     gain.connect(ctx.destination);
+    osc.onended = () => {
+      osc.disconnect();
+      gain.disconnect();
+    };
     osc.start(startTime);
     osc.stop(startTime + duration + 0.01);
   }

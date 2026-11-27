@@ -235,8 +235,7 @@ body {
   width: 310px;
   max-height: calc(100vh - 28px);
   overflow-y: auto;
-  background: rgba(15, 23, 42, 0.92);
-  backdrop-filter: blur(12px);
+  background: rgba(15, 23, 42, 0.96);
   border: 1px solid rgba(245, 158, 11, 0.45);
   border-radius: 16px;
   box-shadow: 0 18px 42px rgba(0, 0, 0, 0.55);
@@ -342,6 +341,27 @@ body {
 .iaa-stat-good {
   font-weight: 800;
   color: #4ade80;
+}
+
+.iaa-stat-bad {
+  font-weight: 800;
+  color: #f87171;
+}
+
+.iaa-stress-btn {
+  width: 100%;
+  border: 1px solid rgba(251, 191, 36, 0.55);
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.25), rgba(147, 51, 234, 0.28));
+  color: #fde68a;
+  border-radius: 10px;
+  padding: 8px;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.iaa-stress-btn:hover {
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.4), rgba(147, 51, 234, 0.42));
 }
 
 .iaa-reset-btn {

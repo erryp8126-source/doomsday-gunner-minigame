@@ -1,7 +1,18 @@
 import { SKINS } from '../config/weapons';
 import type { AssetLoader } from './AssetLoader';
-import { drawButton, drawPanelCard, drawProgressBar, drawRoundedRect, HitBoxRegistry } from './CanvasUI';
-import { getTrooperPositions } from './GameEngine';
+import {
+  drawButton,
+  drawPanelCard,
+  drawProgressBar,
+  drawRoundedRect,
+  HitBoxRegistry,
+  type ButtonStyle,
+} from './CanvasUI';
+import {
+  createTrooperBuffer,
+  fillTrooperPositions,
+  type TrooperPoint,
+} from './GameEngine';
 import {
   BANNER_ZONE_TOP,
   LOGICAL_HEIGHT,
@@ -9,6 +20,8 @@ import {
   PLAYER_Y,
   type AirdropCrate,
   type Barrel,
+  type BossCombatState,
+  type BossFireball,
   type Bullet,
   type DamageText,
   type GameMode,
@@ -23,7 +36,13 @@ import {
   type Zombie,
 } from './types';
 
+export interface RenderPoolView<T> {
+  getRawItems: () => readonly T[];
+  forEachActive: (fn: (item: T) => void) => void;
+}
+
 export interface RenderSnapshot {
+  renderScale: number;
   mode: GameMode;
   endlessWave: number;
   totalSurviveSec: number;
@@ -46,6 +65,7 @@ export interface RenderSnapshot {
   elapsed: number;
   bossSpawned: boolean;
   bossRef: Zombie | null;
+  bossState: BossCombatState;
   kills: number;
   runCoins: number;
   combo: number;
@@ -60,12 +80,13 @@ export interface RenderSnapshot {
   safeTop: number;
   upgradeCosts: { attack: number; firerate: number; squad: number };
   canAfford: { attack: boolean; firerate: boolean; squad: boolean };
-  bullets: { forEachActive: (fn: (b: Bullet) => void) => void };
-  zombies: { forEachActive: (fn: (z: Zombie) => void) => void };
-  barrels: { forEachActive: (fn: (b: Barrel) => void) => void };
-  gates: { forEachActive: (fn: (g: Gate) => void) => void };
-  particles: { forEachActive: (fn: (p: Particle) => void) => void };
-  texts: { forEachActive: (fn: (t: DamageText) => void) => void };
+  bullets: RenderPoolView<Bullet>;
+  zombies: RenderPoolView<Zombie>;
+  barrels: RenderPoolView<Barrel>;
+  gates: RenderPoolView<Gate>;
+  particles: RenderPoolView<Particle>;
+  texts: RenderPoolView<DamageText>;
+  bossFireballs: RenderPoolView<BossFireball>;
 }
 
 export interface RenderActions {
@@ -94,17 +115,157 @@ export interface RenderActions {
   onToggleMute: () => void;
 }
 
+const FONT_FAMILY = '"PingFang SC", "Microsoft YaHei", sans-serif';
+const EMPTY_DASH: number[] = [];
+const AIRDROP_DASH: number[] = [12, 8];
+
+const HUD_PAUSE_BTN_STYLE: ButtonStyle = {
+  fillTop: '#334155',
+  fillBottom: '#1e293b',
+  borderColor: '#64748b',
+  fontSize: 20,
+  radius: 16,
+};
+
+const HUD_MUTE_ON_BTN_STYLE: ButtonStyle = {
+  fillTop: '#475569',
+  fillBottom: '#334155',
+  borderColor: '#64748b',
+  fontSize: 20,
+  radius: 16,
+};
+
+const HUD_MUTE_OFF_BTN_STYLE: ButtonStyle = {
+  fillTop: '#1e293b',
+  fillBottom: '#0f172a',
+  borderColor: '#64748b',
+  fontSize: 20,
+  radius: 16,
+};
+
+function compareZombieY(a: Zombie, b: Zombie): number {
+  return a.y - b.y;
+}
+
+function sortTrooperPointsByY(pts: TrooperPoint[], len: number): void {
+  for (let i = 1; i < len; i++) {
+    const keyX = pts[i].x;
+    const keyY = pts[i].y;
+    let j = i - 1;
+    while (j >= 0 && pts[j].y > keyY) {
+      pts[j + 1].x = pts[j].x;
+      pts[j + 1].y = pts[j].y;
+      j -= 1;
+    }
+    pts[j + 1].x = keyX;
+    pts[j + 1].y = keyY;
+  }
+}
+
 /**
- * 2D 精绘 Canvas 渲染引擎（严格对齐 prototype_reference.html 视觉表现 + 100% 纯简体中文）
+ * 2D 精绘 Canvas 渲染引擎（严格对齐原型视觉表现 + 零 GC 抖动 + 60fps 批量绘制 + 100% 纯简体中文）
  */
 export class Renderer {
   private readonly ctx: CanvasRenderingContext2D;
   private readonly assets: AssetLoader;
   public readonly hitBoxes = new HitBoxRegistry();
 
+  private readonly renderSortBuf: Zombie[] = [];
+  private readonly squadPosBuf = createTrooperBuffer();
+  private readonly floatFontCache = new Map<number, string>();
+  private readonly armoryClickFns = new Map<string, () => void>();
+
+  private readonly damageVignetteGrad: CanvasGradient;
+  private readonly menuOverlayGrad: CanvasGradient;
+  private readonly airdropBeamGrad: CanvasGradient;
+
+  private readonly hudAirdropBtnStyle: ButtonStyle = {
+    fillTop: '#fbbf24',
+    fillBottom: '#d97706',
+    borderColor: '#fef9c3',
+    textColor: '#0f172a',
+    fontSize: 20,
+    radius: 16,
+    pulseScale: 1,
+  };
+
+  private readonly menuSuperBtnStyle: ButtonStyle = {
+    fillTop: '#f59e0b',
+    fillBottom: '#d97706',
+    borderColor: '#fde68a',
+    textColor: '#0f172a',
+    fontSize: 27,
+    radius: 22,
+    pulseScale: 1,
+  };
+
+  private readonly menuStartBtnStyle: ButtonStyle = {
+    fillTop: '#10b981',
+    fillBottom: '#059669',
+    borderColor: '#6ee7b7',
+    fontSize: 32,
+    subText: '',
+    radius: 22,
+  };
+
+  private readonly menuEndlessBtnStyle: ButtonStyle = {
+    fillTop: '#9333ea',
+    fillBottom: '#6b21a8',
+    borderColor: '#f5d0fe',
+    fontSize: 26,
+    subText: '',
+    subTextColor: '#fde047',
+    radius: 20,
+  };
+
+  private readonly upgradeBuyStyle: ButtonStyle = {
+    fillTop: '#22c55e',
+    fillBottom: '#16a34a',
+    fontSize: 18,
+    radius: 12,
+    disabled: false,
+  };
+
+  private readonly upgradeDisabledStyle: ButtonStyle = {
+    fillTop: '#334155',
+    fillBottom: '#1e293b',
+    fontSize: 18,
+    radius: 12,
+    disabled: true,
+  };
+
   constructor(ctx: CanvasRenderingContext2D, assets: AssetLoader) {
     this.ctx = ctx;
     this.assets = assets;
+
+    this.damageVignetteGrad = ctx.createRadialGradient(
+      LOGICAL_WIDTH * 0.5,
+      LOGICAL_HEIGHT * 0.5,
+      220,
+      LOGICAL_WIDTH * 0.5,
+      LOGICAL_HEIGHT * 0.5,
+      680,
+    );
+    this.damageVignetteGrad.addColorStop(0, 'rgba(239, 68, 68, 0)');
+    this.damageVignetteGrad.addColorStop(1, 'rgba(220, 38, 38, 1)');
+
+    this.menuOverlayGrad = ctx.createLinearGradient(0, 0, 0, LOGICAL_HEIGHT);
+    this.menuOverlayGrad.addColorStop(0, 'rgba(9, 13, 20, 0.72)');
+    this.menuOverlayGrad.addColorStop(0.55, 'rgba(9, 13, 20, 0.48)');
+    this.menuOverlayGrad.addColorStop(1, 'rgba(9, 13, 20, 0.88)');
+
+    this.airdropBeamGrad = ctx.createLinearGradient(0, -160, 0, 88);
+    this.airdropBeamGrad.addColorStop(0, 'rgba(250, 204, 21, 0)');
+    this.airdropBeamGrad.addColorStop(1, 'rgba(250, 204, 21, 0.45)');
+  }
+
+  private getFloatFont(size: number): string {
+    let font = this.floatFontCache.get(size);
+    if (!font) {
+      font = `900 ${size}px ${FONT_FAMILY}`;
+      this.floatFontCache.set(size, font);
+    }
+    return font;
   }
 
   public render(snap: RenderSnapshot, actions: RenderActions): void {
@@ -117,15 +278,22 @@ export class Renderer {
     }
 
     this.renderRoad(snap.roadScroll);
+    this.renderBossGroundTelegraphs(snap);
     this.renderGates(snap);
     this.renderBarrels(snap);
     this.renderZombies(snap);
 
     if (snap.airdrop.active && !snap.airdrop.claimed) {
-      this.renderAirdropCrate(snap.airdrop, snap.clock, actions.onTriggerAirdrop, snap.state === 'PLAYING');
+      this.renderAirdropCrate(
+        snap.airdrop,
+        snap.clock,
+        actions.onTriggerAirdrop,
+        snap.state === 'PLAYING',
+      );
     }
 
     this.renderSquad(snap);
+    this.renderBossProjectiles(snap);
     this.renderBulletsAndEffects(snap);
 
     if (snap.state === 'PLAYING') {
@@ -151,20 +319,10 @@ export class Renderer {
     ctx.restore();
 
     if (snap.damageVignette > 0.01) {
-      ctx.save();
-      const grad = ctx.createRadialGradient(
-        LOGICAL_WIDTH * 0.5,
-        LOGICAL_HEIGHT * 0.5,
-        220,
-        LOGICAL_WIDTH * 0.5,
-        LOGICAL_HEIGHT * 0.5,
-        680,
-      );
-      grad.addColorStop(0, 'rgba(239, 68, 68, 0)');
-      grad.addColorStop(1, `rgba(220, 38, 38, ${Math.min(0.65, snap.damageVignette)})`);
-      ctx.fillStyle = grad;
+      ctx.globalAlpha = Math.min(0.65, snap.damageVignette);
+      ctx.fillStyle = this.damageVignetteGrad;
       ctx.fillRect(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT);
-      ctx.restore();
+      ctx.globalAlpha = 1;
     }
 
     if (snap.toast) {
@@ -174,6 +332,32 @@ export class Renderer {
 
   private renderRoad(roadScroll: number): void {
     const ctx = this.ctx;
+    const cachedRoad = this.assets.cachedRoad;
+    if (cachedRoad) {
+      const period = LOGICAL_HEIGHT * 2;
+      const offset = ((roadScroll % period) + period) % period;
+      const srcY = Math.floor((LOGICAL_HEIGHT - offset + period) % period);
+      if (srcY <= LOGICAL_HEIGHT) {
+        ctx.drawImage(
+          cachedRoad,
+          0,
+          srcY,
+          LOGICAL_WIDTH,
+          LOGICAL_HEIGHT,
+          0,
+          0,
+          LOGICAL_WIDTH,
+          LOGICAL_HEIGHT,
+        );
+      } else {
+        const h1 = period - srcY;
+        const h2 = LOGICAL_HEIGHT - h1;
+        ctx.drawImage(cachedRoad, 0, srcY, LOGICAL_WIDTH, h1, 0, 0, LOGICAL_WIDTH, h1);
+        ctx.drawImage(cachedRoad, 0, 0, LOGICAL_WIDTH, h2, 0, h1, LOGICAL_WIDTH, h2);
+      }
+      return;
+    }
+
     const bg = this.assets.sprites.bg_road;
     if (bg) {
       const y0 = roadScroll % LOGICAL_HEIGHT;
@@ -189,14 +373,145 @@ export class Renderer {
     }
   }
 
+  private renderBossGroundTelegraphs(snap: RenderSnapshot): void {
+    const ctx = this.ctx;
+    const bs = snap.bossState;
+
+    // 1. 熔岩冲锋践踏纵向红色警戒跑道
+    if (bs.action === 'CHARGE_WARN' || bs.action === 'CHARGE_DASH') {
+      const rx = bs.chargeTargetX - bs.chargeHalfWidth;
+      const rw = bs.chargeHalfWidth * 2;
+      const ry = snap.bossRef ? Math.max(120, snap.bossRef.y) : 260;
+      const rh = Math.max(120, PLAYER_Y + 60 - ry);
+      const blink =
+        bs.action === 'CHARGE_DASH'
+          ? 0.36
+          : 0.16 + 0.16 * Math.abs(Math.sin(snap.clock * 18));
+
+      ctx.globalAlpha = blink;
+      ctx.fillStyle = '#ef4444';
+      ctx.fillRect(rx, ry, rw, rh);
+
+      if (bs.action === 'CHARGE_WARN') {
+        const prog = 1 - Math.max(0, Math.min(1, bs.chargeTimer / Math.max(0.01, bs.chargeDuration)));
+        ctx.globalAlpha = 0.28;
+        ctx.fillStyle = '#dc2626';
+        ctx.fillRect(rx + 4, ry, rw - 8, rh * prog);
+      }
+
+      ctx.globalAlpha = 0.9;
+      ctx.fillStyle = '#fca5a5';
+      ctx.fillRect(rx, ry, 4, rh);
+      ctx.fillRect(rx + rw - 4, ry, 4, rh);
+
+      ctx.globalAlpha = 0.85;
+      ctx.strokeStyle = '#fecaca';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      for (let ay = ry + 48; ay < PLAYER_Y + 20; ay += 96) {
+        ctx.moveTo(bs.chargeTargetX - 24, ay);
+        ctx.lineTo(bs.chargeTargetX, ay + 22);
+        ctx.lineTo(bs.chargeTargetX + 24, ay);
+      }
+      ctx.stroke();
+    }
+
+    // 2. 熔岩火球地面扩散红圈预警与爆炸环
+    const fireballs = snap.bossFireballs.getRawItems();
+    for (let i = 0; i < fireballs.length; i++) {
+      const fb = fireballs[i];
+      if (!fb.active) continue;
+
+      if (!fb.exploded) {
+        const p = 1 - Math.max(0, Math.min(1, fb.timer / Math.max(0.01, fb.duration)));
+        ctx.globalAlpha = 0.18;
+        ctx.fillStyle = '#ef4444';
+        ctx.beginPath();
+        ctx.arc(fb.targetX, fb.targetY, fb.radius, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.globalAlpha = 0.9;
+        ctx.strokeStyle = '#fca5a5';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+
+        ctx.globalAlpha = 0.44;
+        ctx.fillStyle = '#ef4444';
+        ctx.beginPath();
+        ctx.arc(fb.targetX, fb.targetY, Math.max(4, fb.radius * p), 0, Math.PI * 2);
+        ctx.fill();
+      } else if (fb.explodeFlash > 0) {
+        const ep = 1 - fb.explodeFlash / 0.22;
+        ctx.globalAlpha = Math.max(0, fb.explodeFlash / 0.22) * 0.78;
+        ctx.strokeStyle = '#fb923c';
+        ctx.lineWidth = 6;
+        ctx.beginPath();
+        ctx.arc(fb.targetX, fb.targetY, fb.radius * (0.9 + ep * 0.6), 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+
+    // 3. 破盾超时全屏熔岩冲击波
+    if (bs.shockwaveFlash > 0) {
+      const sp = 1 - bs.shockwaveFlash / 0.55;
+      const sx = snap.bossRef ? snap.bossRef.x : LOGICAL_WIDTH * 0.5;
+      const sy = snap.bossRef ? snap.bossRef.y : 320;
+      ctx.globalAlpha = Math.max(0, bs.shockwaveFlash / 0.55) * 0.85;
+      ctx.strokeStyle = '#fb923c';
+      ctx.lineWidth = 10;
+      ctx.beginPath();
+      ctx.arc(sx, sy, 80 + sp * 960, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    ctx.globalAlpha = 1;
+  }
+
+  private renderBossProjectiles(snap: RenderSnapshot): void {
+    const ctx = this.ctx;
+    const fireballs = snap.bossFireballs.getRawItems();
+    for (let i = 0; i < fireballs.length; i++) {
+      const fb = fireballs[i];
+      if (!fb.active || fb.exploded) continue;
+
+      const t = 1 - Math.max(0, Math.min(1, fb.timer / Math.max(0.01, fb.duration)));
+      const x = fb.startX + (fb.targetX - fb.startX) * t;
+      const y = fb.startY + (fb.targetY - fb.startY) * t - Math.sin(t * Math.PI) * 180;
+      const sc = 0.65 + 0.55 * t;
+
+      ctx.fillStyle = '#dc2626';
+      ctx.beginPath();
+      ctx.arc(x, y, 22 * sc, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = '#fb923c';
+      ctx.beginPath();
+      ctx.arc(x, y, 15 * sc, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = '#fef08a';
+      ctx.beginPath();
+      ctx.arc(x, y, 8 * sc, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
   private renderGates(snap: RenderSnapshot): void {
     const ctx = this.ctx;
-    snap.gates.forEachActive((g) => {
-      if (g.used) return;
+    const gateItems = snap.gates.getRawItems();
+    ctx.save();
+    ctx.lineWidth = 4;
+    ctx.font = `900 28px ${FONT_FAMILY}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    for (let i = 0; i < gateItems.length; i++) {
+      const g = gateItems[i];
+      if (!g.active || g.used) continue;
+
       const pos = g.value >= 0;
-      const gx = g.x - g.w / 2;
-      const gy = g.y - g.h / 2;
-      ctx.save();
+      const gx = g.x - g.w * 0.5;
+      const gy = g.y - g.h * 0.5;
       drawRoundedRect(ctx, gx, gy, g.w, g.h, 14);
       ctx.fillStyle =
         g.hitFlash > 0
@@ -205,7 +520,6 @@ export class Renderer {
             ? 'rgba(14, 165, 233, 0.62)'
             : 'rgba(239, 68, 68, 0.65)';
       ctx.fill();
-      ctx.lineWidth = 4;
       ctx.strokeStyle = pos ? '#7dd3fc' : '#fca5a5';
       ctx.stroke();
 
@@ -213,76 +527,87 @@ export class Renderer {
       ctx.fillRect(gx - 5, gy - 8, 10, g.h + 16);
       ctx.fillRect(gx + g.w - 5, gy - 8, 10, g.h + 16);
 
-      ctx.fillStyle = '#ffffff';
-      ctx.font = '900 28px "PingFang SC", "Microsoft YaHei", sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.lineWidth = 5;
-      ctx.strokeStyle = 'rgba(15, 23, 42, 0.75)';
       const txt =
         g.kind === 'squad'
           ? `队友 ${g.value >= 0 ? '+' : ''}${g.value}`
           : `射速 ${g.value >= 0 ? '+' : ''}${g.value}%`;
-      ctx.strokeText(txt, g.x, g.y + 1);
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+      ctx.fillText(txt, g.x + 2, g.y + 3);
+      ctx.fillStyle = '#ffffff';
       ctx.fillText(txt, g.x, g.y + 1);
-      ctx.restore();
-    });
+    }
+    ctx.restore();
   }
 
   private renderBarrels(snap: RenderSnapshot): void {
     const ctx = this.ctx;
     const img = this.assets.sprites.barrel;
     const whiteImg = this.assets.whiteSprites.barrel;
+    const shadowOval = this.assets.shadowOval;
+    const barrelItems = snap.barrels.getRawItems();
+    const bw = 114;
+    const bh = 98;
     let idx = 0;
 
-    snap.barrels.forEachActive((b) => {
+    for (let i = 0; i < barrelItems.length; i++) {
+      const b = barrelItems[i];
+      if (!b.active) continue;
       idx += 1;
-      ctx.save();
-      ctx.translate(b.x, b.y);
 
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.42)';
-      ctx.beginPath();
-      ctx.ellipse(0, 42, 54, 18, 0, 0, Math.PI * 2);
-      ctx.fill();
+      if (shadowOval) {
+        ctx.drawImage(shadowOval, b.x - 54, b.y + 42 - 18, 108, 36);
+      } else {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.42)';
+        ctx.beginPath();
+        ctx.ellipse(b.x, b.y + 42, 54, 18, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
 
-      ctx.save();
-      ctx.scale(b.hitScale, b.hitScale);
-      const bw = 114;
-      const bh = 98;
+      const hasScale = Math.abs(b.hitScale - 1) > 0.002;
+      if (hasScale) {
+        ctx.save();
+        ctx.translate(b.x, b.y);
+        ctx.scale(b.hitScale, b.hitScale);
+      }
+      const ox = hasScale ? 0 : b.x;
+      const oy = hasScale ? 0 : b.y;
+
       if (img) {
-        ctx.drawImage(img, -bw / 2, -bh / 2, bw, bh);
+        ctx.drawImage(img, ox - bw * 0.5, oy - bh * 0.5, bw, bh);
         if (b.hitFlash > 0 && whiteImg) {
           ctx.globalAlpha = 0.72;
-          ctx.drawImage(whiteImg, -bw / 2, -bh / 2, bw, bh);
+          ctx.drawImage(whiteImg, ox - bw * 0.5, oy - bh * 0.5, bw, bh);
           ctx.globalAlpha = 1;
         }
       } else {
         ctx.fillStyle = b.hitFlash > 0 ? '#fef3c7' : '#b45309';
-        drawRoundedRect(ctx, -bw / 2, -bh / 2, bw, bh, 16);
+        drawRoundedRect(ctx, ox - bw * 0.5, oy - bh * 0.5, bw, bh, 16);
         ctx.fill();
       }
 
-      ctx.font = '900 40px "PingFang SC", "Microsoft YaHei", sans-serif';
+      ctx.font = `900 40px ${FONT_FAMILY}`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.lineWidth = 7;
-      ctx.strokeStyle = '#1f1004';
       const hpStr = String(Math.ceil(b.hp));
-      ctx.strokeText(hpStr, 0, 2);
+      ctx.fillStyle = '#1f1004';
+      ctx.fillText(hpStr, ox + 2, oy + 4);
       ctx.fillStyle = '#ffffff';
-      ctx.fillText(hpStr, 0, 2);
-      ctx.restore();
+      ctx.fillText(hpStr, ox, oy + 2);
+
+      if (hasScale) {
+        ctx.restore();
+      }
 
       const bob = Math.sin(snap.clock * 6 + idx) * 6;
       if (b.iconKey && this.assets.sprites[b.iconKey]) {
         ctx.fillStyle = 'rgba(56, 189, 248, 0.35)';
         ctx.beginPath();
-        ctx.arc(0, -68 + bob, 38, 0, Math.PI * 2);
+        ctx.arc(b.x, b.y - 68 + bob, 38, 0, Math.PI * 2);
         ctx.fill();
-        ctx.drawImage(this.assets.sprites[b.iconKey]!, -42, -108 + bob, 84, 80);
+        ctx.drawImage(this.assets.sprites[b.iconKey]!, b.x - 42, b.y - 108 + bob, 84, 80);
       }
 
-      drawRoundedRect(ctx, -58, -138 + bob, 116, 30, 10);
+      drawRoundedRect(ctx, b.x - 58, b.y - 138 + bob, 116, 30, 10);
       ctx.fillStyle =
         b.rewardType === 'weapon' ? '#0284c7' : b.rewardType === 'squad' ? '#059669' : '#7c3aed';
       ctx.fill();
@@ -291,12 +616,11 @@ export class Renderer {
       ctx.stroke();
 
       ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 18px "PingFang SC", "Microsoft YaHei", sans-serif';
+      ctx.font = `bold 18px ${FONT_FAMILY}`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(b.rewardLabel, 0, -122 + bob);
-      ctx.restore();
-    });
+      ctx.fillText(b.rewardLabel, b.x, b.y - 122 + bob);
+    }
   }
 
   private renderZombies(snap: RenderSnapshot): void {
@@ -309,16 +633,61 @@ export class Renderer {
     const tWhite = this.assets.whiteSprites.zombie_tank || zWhite;
     const bImg = this.assets.sprites.boss;
     const bWhite = this.assets.whiteSprites.boss;
+    const shadowOval = this.assets.shadowOval;
 
-    const list: Zombie[] = [];
-    snap.zombies.forEachActive((z) => list.push(z));
-    list.sort((a, b) => a.y - b.y);
+    const list = this.renderSortBuf;
+    list.length = 0;
+    const zombieItems = snap.zombies.getRawItems();
+    for (let i = 0; i < zombieItems.length; i++) {
+      const z = zombieItems[i];
+      if (z.active && z.y >= -140 && z.y <= LOGICAL_HEIGHT + 140) {
+        list.push(z);
+      }
+    }
+    list.sort(compareZombieY);
 
+    const s = snap.renderScale || 1;
+    const tx = snap.state === 'PLAYING' ? snap.shakeX : 0;
+    const ty = snap.state === 'PLAYING' ? snap.shakeY : 0;
+
+    // 通道 0：地面阴影（预烘焙贴图替代路径光栅化）与尸王狂暴光环
+    if (!shadowOval) {
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.42)';
+    }
     for (let i = 0; i < list.length; i++) {
       const z = list[i];
-      ctx.save();
-      ctx.translate(z.x, z.y);
+      if (z.dying) continue;
+      const drawW =
+        (z.isBoss ? 204 : z.kind === 'tank' ? 112 : z.kind === 'runner' ? 92 : 84) *
+        (z.isBoss ? 1 : z.kind === 'normal' ? z.scale : 1);
+      const drawH =
+        (z.isBoss ? 204 : z.kind === 'tank' ? 132 : z.kind === 'runner' ? 98 : 106) *
+        (z.isBoss ? 1 : z.kind === 'normal' ? z.scale : 1);
+      const rx = drawW * 0.36;
+      const ry = drawH * 0.13;
+      const sy = z.y + drawH * 0.42;
 
+      if (shadowOval) {
+        ctx.drawImage(shadowOval, z.x - rx, sy - ry, rx * 2, ry * 2);
+      } else {
+        ctx.beginPath();
+        ctx.ellipse(z.x, sy, rx, ry, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      if (z.isBoss && z.rageTimer > 0) {
+        const ragePulse = 1 + Math.sin(snap.clock * 16) * 0.08;
+        ctx.strokeStyle = 'rgba(239, 68, 68, 0.85)';
+        ctx.lineWidth = 6;
+        ctx.beginPath();
+        ctx.arc(z.x, z.y, 108 * ragePulse, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+
+    // 通道 1：直接通过 setTransform 写入旋转/缩放矩阵，彻底去掉每只丧尸 save/restore 压栈
+    for (let i = 0; i < list.length; i++) {
+      const z = list[i];
       const img = z.isBoss ? bImg : z.kind === 'runner' ? rImg : z.kind === 'tank' ? tImg : zImg;
       const wImg = z.isBoss ? bWhite : z.kind === 'runner' ? rWhite : z.kind === 'tank' ? tWhite : zWhite;
       const drawW =
@@ -329,43 +698,43 @@ export class Renderer {
         (z.isBoss ? 1 : z.kind === 'normal' ? z.scale : 1);
 
       if (z.dying) {
-        ctx.globalAlpha = Math.max(0, z.dieLife / 0.48);
-        ctx.rotate(z.rot);
         const sc = 0.65 + 0.45 * (z.dieLife / 0.48);
-        ctx.scale(sc, sc);
-        if (img) ctx.drawImage(img, -drawW / 2, -drawH / 2, drawW, drawH);
-        ctx.restore();
+        const c = Math.cos(z.rot);
+        const sn = Math.sin(z.rot);
+        ctx.globalAlpha = Math.max(0, z.dieLife / 0.48);
+        ctx.setTransform(
+          s * c * sc,
+          s * sn * sc,
+          -s * sn * sc,
+          s * c * sc,
+          s * (z.x + tx),
+          s * (z.y + ty),
+        );
+        if (img) ctx.drawImage(img, -drawW * 0.5, -drawH * 0.5, drawW, drawH);
+        ctx.globalAlpha = 1;
         continue;
-      }
-
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.42)';
-      ctx.beginPath();
-      ctx.ellipse(0, drawH * 0.42, drawW * 0.36, drawH * 0.13, 0, 0, Math.PI * 2);
-      ctx.fill();
-
-      if (z.isBoss && z.rageTimer > 0) {
-        const ragePulse = 1 + Math.sin(snap.clock * 16) * 0.08;
-        ctx.save();
-        ctx.strokeStyle = 'rgba(239, 68, 68, 0.85)';
-        ctx.lineWidth = 6;
-        ctx.beginPath();
-        ctx.arc(0, 0, 108 * ragePulse, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.restore();
       }
 
       const wobbleRot = Math.sin(z.phase) * (z.isBoss ? 0.06 : 0.13);
       const squashY = 1 + Math.abs(Math.sin(z.phase)) * 0.06;
       const squashX = 1 / squashY;
+      const c = Math.cos(wobbleRot);
+      const sn = Math.sin(wobbleRot);
 
-      ctx.save();
-      ctx.rotate(wobbleRot);
-      ctx.scale(squashX, squashY);
+      ctx.setTransform(
+        s * c * squashX,
+        s * sn * squashX,
+        -s * sn * squashY,
+        s * c * squashY,
+        s * (z.x + tx),
+        s * (z.y + ty),
+      );
+
       if (img) {
-        ctx.drawImage(img, -drawW / 2, -drawH / 2, drawW, drawH);
+        ctx.drawImage(img, -drawW * 0.5, -drawH * 0.5, drawW, drawH);
         if (z.hitFlash > 0 && wImg) {
           ctx.globalAlpha = 0.78;
-          ctx.drawImage(wImg, -drawW / 2, -drawH / 2, drawW, drawH);
+          ctx.drawImage(wImg, -drawW * 0.5, -drawH * 0.5, drawW, drawH);
           ctx.globalAlpha = 1;
         }
       } else {
@@ -374,18 +743,99 @@ export class Renderer {
         ctx.arc(0, 0, z.radius, 0, Math.PI * 2);
         ctx.fill();
       }
-      ctx.restore();
+    }
 
-      if (z.hp < z.maxHp || z.isBoss) {
-        const bw = z.isBoss ? 150 : 52;
-        const bh = z.isBoss ? 12 : 7;
-        const by = -drawH / 2 - 14;
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.68)';
-        ctx.fillRect(-bw / 2, by, bw, bh);
-        ctx.fillStyle = z.isBoss ? '#ff4757' : '#2ed573';
-        ctx.fillRect(-bw / 2, by, bw * Math.max(0, z.hp / z.maxHp), bh);
+    ctx.setTransform(s, 0, 0, s, s * tx, s * ty);
+
+    // 通道 1.5：熔岩尸王冲锋蓄力红光 / 熔岩护盾 / 破盾虚弱闪金光（纯色半透明+边框，零 shadowBlur）
+    if (snap.bossRef && snap.bossRef.active && !snap.bossRef.dying && snap.bossRef.y >= -140) {
+      const boss = snap.bossRef;
+      const bs = snap.bossState;
+
+      if (bs.action === 'CHARGE_WARN') {
+        ctx.globalAlpha = 0.55 + 0.4 * Math.abs(Math.sin(snap.clock * 18));
+        ctx.strokeStyle = '#ef4444';
+        ctx.lineWidth = 7;
+        ctx.beginPath();
+        ctx.arc(boss.x, boss.y, 102 + Math.sin(snap.clock * 20) * 6, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
       }
-      ctx.restore();
+
+      if (bs.shieldActive) {
+        ctx.globalAlpha = 0.24;
+        ctx.fillStyle = '#38bdf8';
+        ctx.beginPath();
+        ctx.arc(boss.x, boss.y, 106, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.globalAlpha = 0.9;
+        ctx.strokeStyle = '#38bdf8';
+        ctx.lineWidth = 5;
+        ctx.stroke();
+
+        ctx.strokeStyle = '#fb923c';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(boss.x, boss.y, 114 + Math.sin(snap.clock * 10) * 3, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      } else if (bs.action === 'STUNNED' && bs.stunTimer > 0) {
+        const flash = Math.sin(snap.clock * 24) > 0;
+        ctx.globalAlpha = flash ? 0.32 : 0.16;
+        ctx.fillStyle = '#fde047';
+        ctx.beginPath();
+        ctx.arc(boss.x, boss.y, 104, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.globalAlpha = 0.95;
+        ctx.strokeStyle = flash ? '#fef08a' : '#f59e0b';
+        ctx.lineWidth = 6;
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+
+        ctx.font = `900 24px ${FONT_FAMILY}`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#0f172a';
+        ctx.fillText('破盾虚弱', boss.x + 2, boss.y - 134);
+        ctx.fillStyle = '#fde047';
+        ctx.fillText('破盾虚弱', boss.x, boss.y - 136);
+      }
+    }
+
+    // 通道 2：无 save/restore 批量绘制血条底槽与血条前景
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.68)';
+    for (let i = 0; i < list.length; i++) {
+      const z = list[i];
+      if (z.dying || (z.hp >= z.maxHp && !z.isBoss)) continue;
+      const drawH =
+        (z.isBoss ? 204 : z.kind === 'tank' ? 132 : z.kind === 'runner' ? 98 : 106) *
+        (z.isBoss ? 1 : z.kind === 'normal' ? z.scale : 1);
+      const bw = z.isBoss ? 150 : 52;
+      const bh = z.isBoss ? 12 : 7;
+      ctx.fillRect(z.x - bw * 0.5, z.y - drawH * 0.5 - 14, bw, bh);
+    }
+
+    ctx.fillStyle = '#2ed573';
+    for (let i = 0; i < list.length; i++) {
+      const z = list[i];
+      if (z.dying || z.isBoss || z.hp >= z.maxHp) continue;
+      const drawH =
+        (z.kind === 'tank' ? 132 : z.kind === 'runner' ? 98 : 106) *
+        (z.kind === 'normal' ? z.scale : 1);
+      const bw = 52;
+      const bh = 7;
+      ctx.fillRect(z.x - bw * 0.5, z.y - drawH * 0.5 - 14, bw * Math.max(0, z.hp / z.maxHp), bh);
+    }
+
+    ctx.fillStyle = '#ff4757';
+    for (let i = 0; i < list.length; i++) {
+      const z = list[i];
+      if (z.dying || !z.isBoss) continue;
+      const bw = 150;
+      const bh = 12;
+      ctx.fillRect(z.x - bw * 0.5, z.y - 102 - 14, bw * Math.max(0, z.hp / z.maxHp), bh);
     }
   }
 
@@ -399,15 +849,14 @@ export class Renderer {
     const pulse = 1 + Math.sin(clock * 8) * 0.07;
     const w = 88 * pulse;
     const h = 88 * pulse;
-    const x = airdrop.x - w / 2;
-    const y = airdrop.y - h / 2;
+    const x = airdrop.x - w * 0.5;
+    const y = airdrop.y - h * 0.5;
 
     ctx.save();
-    const beam = ctx.createLinearGradient(airdrop.x, y - 160, airdrop.x, y + h);
-    beam.addColorStop(0, 'rgba(250, 204, 21, 0)');
-    beam.addColorStop(1, 'rgba(250, 204, 21, 0.45)');
-    ctx.fillStyle = beam;
-    ctx.fillRect(airdrop.x - 28, y - 150, 56, 160 + h * 0.5);
+    ctx.translate(airdrop.x, y);
+    ctx.fillStyle = this.airdropBeamGrad;
+    ctx.fillRect(-28, -150, 56, 160 + h * 0.5);
+    ctx.restore();
 
     ctx.fillStyle = '#f59e0b';
     drawRoundedRect(ctx, x, y, w, h, 16);
@@ -420,63 +869,72 @@ export class Renderer {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillStyle = '#0f172a';
-    ctx.font = '900 18px "PingFang SC", "Microsoft YaHei", sans-serif';
+    ctx.font = `900 18px ${FONT_FAMILY}`;
     ctx.fillText('超级空投', airdrop.x, airdrop.y - 11);
     ctx.fillStyle = '#ffffff';
-    ctx.font = '800 15px "PingFang SC", "Microsoft YaHei", sans-serif';
+    ctx.font = `800 15px ${FONT_FAMILY}`;
     ctx.fillText('点击领取', airdrop.x, airdrop.y + 14);
-    ctx.restore();
 
     if (interactive) {
-      this.hitBoxes.register({
-        id: 'airdrop_crate',
-        x: x - 18,
-        y: y - 18,
-        w: w + 36,
-        h: h + 36,
-        onClick: onTrigger,
-      });
+      this.hitBoxes.registerRect('airdrop_crate', x - 18, y - 18, w + 36, h + 36, onTrigger);
     }
   }
 
   private renderSquad(snap: RenderSnapshot): void {
     const ctx = this.ctx;
     const pImg = this.assets.sprites.player;
-    const pts = getTrooperPositions(snap.squadCount, snap.squadX, PLAYER_Y);
-    pts.sort((a, b) => a.y - b.y);
+    const shadowOval = this.assets.shadowOval;
+    const vis = fillTrooperPositions(snap.squadCount, snap.squadX, PLAYER_Y, this.squadPosBuf);
+    sortTrooperPointsByY(this.squadPosBuf, vis);
 
     if (snap.invincibleTimer > 0 || snap.doubleFireTimer > 0) {
-      ctx.save();
       ctx.strokeStyle = snap.invincibleTimer > 0 ? '#38bdf8' : '#f59e0b';
       ctx.lineWidth = 4;
-      ctx.setLineDash([12, 8]);
+      ctx.setLineDash(AIRDROP_DASH);
       ctx.beginPath();
       ctx.ellipse(snap.squadX, PLAYER_Y + 20, 82, 42, 0, 0, Math.PI * 2);
       ctx.stroke();
-      ctx.restore();
+      ctx.setLineDash(EMPTY_DASH);
     }
 
-    for (let i = 0; i < pts.length; i++) {
-      const p = pts[i];
-      ctx.save();
-      ctx.translate(p.x, p.y + (snap.state === 'PLAYING' ? snap.recoil * 0.5 : 0));
+    const recoilOffset = snap.state === 'PLAYING' ? snap.recoil * 0.5 : 0;
+    const showLegendRing = snap.skin.id !== 'standard';
+    const showFlash = snap.muzzleFlash > 0 && snap.state === 'PLAYING';
+    const isPlaying = snap.state === 'PLAYING';
+    const s = snap.renderScale || 1;
+    const tx = isPlaying ? snap.shakeX : 0;
+    const ty = isPlaying ? snap.shakeY : 0;
 
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
-      ctx.beginPath();
-      ctx.ellipse(0, 44, 28, 11, 0, 0, Math.PI * 2);
-      ctx.fill();
-
-      // 传说涂装脚底专属能量环
-      if (snap.skin.id !== 'standard') {
+    // 士兵地面阴影与传说脚环
+    for (let i = 0; i < vis; i++) {
+      const p = this.squadPosBuf[i];
+      const py = p.y + recoilOffset;
+      if (shadowOval) {
+        ctx.drawImage(shadowOval, p.x - 28, py + 44 - 11, 56, 22);
+      } else {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+        ctx.beginPath();
+        ctx.ellipse(p.x, py + 44, 28, 11, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      if (showLegendRing) {
         ctx.strokeStyle = snap.skin.primaryColor;
         ctx.lineWidth = 3;
         ctx.beginPath();
-        ctx.ellipse(0, 42, 26, 10, 0, 0, Math.PI * 2);
+        ctx.ellipse(p.x, py + 42, 26, 10, 0, 0, Math.PI * 2);
         ctx.stroke();
       }
+    }
 
-      const wob = snap.state === 'PLAYING' ? Math.sin(snap.clock * 14 + i) * 0.08 : 0;
-      ctx.rotate(wob);
+    // 士兵立绘与枪口火光（direct setTransform 零 save/restore）
+    for (let i = 0; i < vis; i++) {
+      const p = this.squadPosBuf[i];
+      const py = p.y + recoilOffset;
+      const wob = isPlaying ? Math.sin(snap.clock * 14 + i) * 0.08 : 0;
+      const c = wob !== 0 ? Math.cos(wob) : 1;
+      const sn = wob !== 0 ? Math.sin(wob) : 0;
+
+      ctx.setTransform(s * c, s * sn, -s * sn, s * c, s * (p.x + tx), s * (py + ty));
 
       if (pImg) {
         ctx.drawImage(pImg, -36, -56, 72, 114);
@@ -487,7 +945,7 @@ export class Renderer {
         ctx.fill();
       }
 
-      if (snap.muzzleFlash > 0 && i < 8 && snap.state === 'PLAYING') {
+      if (showFlash && i < 8) {
         ctx.fillStyle = snap.weapon.color;
         ctx.beginPath();
         ctx.arc(16, -54, 11 + Math.random() * 6, 0, Math.PI * 2);
@@ -497,11 +955,11 @@ export class Renderer {
         ctx.arc(16, -54, 5, 0, Math.PI * 2);
         ctx.fill();
       }
-      ctx.restore();
     }
 
+    ctx.setTransform(s, 0, 0, s, s * tx, s * ty);
+
     // 小队人数徽章
-    ctx.save();
     drawRoundedRect(ctx, snap.squadX - 50, PLAYER_Y + 56, 100, 34, 17);
     ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
     ctx.fill();
@@ -509,54 +967,89 @@ export class Renderer {
     ctx.strokeStyle = snap.skin.primaryColor;
     ctx.stroke();
     ctx.fillStyle = '#ffffff';
-    ctx.font = '900 22px "PingFang SC", "Microsoft YaHei", sans-serif';
+    ctx.font = `900 22px ${FONT_FAMILY}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(`小队 ${snap.squadCount}`, snap.squadX, PLAYER_Y + 74);
-    ctx.restore();
   }
 
   private renderBulletsAndEffects(snap: RenderSnapshot): void {
     const ctx = this.ctx;
-    snap.bullets.forEachActive((b) => {
-      ctx.save();
-      ctx.strokeStyle = b.color;
-      ctx.globalAlpha = 0.55;
-      ctx.lineWidth = b.radius * 1.4;
-      ctx.lineCap = 'round';
-      ctx.beginPath();
+    const bulletItems = snap.bullets.getRawItems();
+    const particleItems = snap.particles.getRawItems();
+    const textItems = snap.texts.getRawItems();
+
+    // 1. 子弹批量通道：按同色同宽合并拖尾路径 + 单路径合并全部弹头核心（零 save/restore）
+    ctx.globalAlpha = 0.55;
+    ctx.lineCap = 'round';
+    let trailStarted = false;
+    let lastTrailColor = '';
+    let lastTrailWidth = -1;
+
+    for (let i = 0; i < bulletItems.length; i++) {
+      const b = bulletItems[i];
+      if (!b.active) continue;
+      const lw = b.radius * 1.4;
+      if (!trailStarted || b.color !== lastTrailColor || lw !== lastTrailWidth) {
+        if (trailStarted) ctx.stroke();
+        ctx.beginPath();
+        ctx.strokeStyle = b.color;
+        ctx.lineWidth = lw;
+        lastTrailColor = b.color;
+        lastTrailWidth = lw;
+        trailStarted = true;
+      }
       ctx.moveTo(b.x, b.y);
       ctx.lineTo(b.x - b.vx * 0.022, b.y - b.vy * 0.022);
-      ctx.stroke();
+    }
+    if (trailStarted) ctx.stroke();
 
-      ctx.globalAlpha = 1;
-      ctx.fillStyle = '#ffffff';
-      ctx.beginPath();
-      ctx.arc(b.x, b.y, b.radius * 0.85, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-    });
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    let hasCores = false;
+    for (let i = 0; i < bulletItems.length; i++) {
+      const b = bulletItems[i];
+      if (!b.active) continue;
+      const coreR = b.radius * 0.85;
+      ctx.moveTo(b.x + coreR, b.y);
+      ctx.arc(b.x, b.y, coreR, 0, Math.PI * 2);
+      hasCores = true;
+    }
+    if (hasCores) ctx.fill();
 
-    snap.particles.forEachActive((p) => {
-      ctx.save();
+    // 2. 粒子绘制通道（上限 80 个，无 save/restore）
+    let lastParticleColor = '';
+    for (let i = 0; i < particleItems.length; i++) {
+      const p = particleItems[i];
+      if (!p.active) continue;
       ctx.globalAlpha = Math.max(0, p.life / p.maxLife);
-      ctx.fillStyle = p.color;
-      ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
-      ctx.restore();
-    });
+      if (p.color !== lastParticleColor) {
+        ctx.fillStyle = p.color;
+        lastParticleColor = p.color;
+      }
+      ctx.fillRect(p.x - p.size * 0.5, p.y - p.size * 0.5, p.size, p.size);
+    }
 
-    snap.texts.forEachActive((ft) => {
-      ctx.save();
+    // 3. 飘字绘制通道（上限 18 个，用 2px 深色偏移 fillText 替代高耗时 strokeText）
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    let lastFontSize = -1;
+    for (let i = 0; i < textItems.length; i++) {
+      const ft = textItems[i];
+      if (!ft.active) continue;
       ctx.globalAlpha = Math.max(0, ft.life / ft.maxLife);
-      ctx.font = `900 ${ft.size}px "PingFang SC", "Microsoft YaHei", sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.lineWidth = 6;
-      ctx.strokeStyle = '#0f172a';
-      ctx.strokeText(ft.text, ft.x, ft.y);
+      if (ft.size !== lastFontSize) {
+        ctx.font = this.getFloatFont(ft.size);
+        lastFontSize = ft.size;
+      }
+      ctx.fillStyle = '#0f172a';
+      ctx.fillText(ft.text, ft.x + 2, ft.y + 2);
       ctx.fillStyle = ft.color;
       ctx.fillText(ft.text, ft.x, ft.y);
-      ctx.restore();
-    });
+    }
+
+    ctx.globalAlpha = 1;
   }
 
   private renderHUD(snap: RenderSnapshot, actions: RenderActions): void {
@@ -599,18 +1092,30 @@ export class Renderer {
     const by = top + 20;
     const bw = 186;
     const bh = 18;
-    const prog = Math.min(1, snap.elapsed / Math.max(1, snap.level.duration));
-    drawProgressBar(ctx, bx, by, bw, bh, prog, snap.bossSpawned ? '#ff4757' : '#34d399');
+    const prog = snap.bossState.alertPending
+      ? 1
+      : Math.min(1, snap.elapsed / Math.max(1, snap.level.duration));
+    drawProgressBar(
+      ctx,
+      bx,
+      by,
+      bw,
+      bh,
+      prog,
+      snap.bossSpawned || snap.bossState.alertPending ? '#ff4757' : '#34d399',
+    );
 
     ctx.fillStyle = '#e2e8f0';
     ctx.font = 'bold 17px "PingFang SC", "Microsoft YaHei", sans-serif';
     ctx.textAlign = 'center';
     const remainSec = Math.max(0, Math.ceil(snap.level.duration - snap.elapsed));
-    const progText = snap.bossSpawned
-      ? snap.mode === 'endless'
-        ? `第${snap.endlessWave}波 · 尸王战`
-        : '熔岩尸王战'
-      : `距尸王 ${remainSec} 秒`;
+    const progText = snap.bossState.alertPending
+      ? '尸王警报'
+      : snap.bossSpawned
+        ? snap.mode === 'endless'
+          ? `第${snap.endlessWave}波 · 尸王战`
+          : '熔岩尸王战'
+        : `距尸王 ${remainSec} 秒`;
     ctx.fillText(progText, bx + bw / 2, top + 64);
     ctx.restore();
 
@@ -625,13 +1130,7 @@ export class Renderer {
       82,
       '暂停',
       actions.onTogglePause,
-      {
-        fillTop: '#334155',
-        fillBottom: '#1e293b',
-        borderColor: '#64748b',
-        fontSize: 20,
-        radius: 16,
-      },
+      HUD_PAUSE_BTN_STYLE,
     );
 
     drawButton(
@@ -644,37 +1143,77 @@ export class Renderer {
       82,
       snap.save.muted ? '静音' : '音效',
       actions.onToggleMute,
-      {
-        fillTop: snap.save.muted ? '#475569' : '#1e293b',
-        fillBottom: snap.save.muted ? '#334155' : '#0f172a',
-        borderColor: '#64748b',
-        fontSize: 20,
-        radius: 16,
-      },
+      snap.save.muted ? HUD_MUTE_ON_BTN_STYLE : HUD_MUTE_OFF_BTN_STYLE,
     );
 
-    // 熔岩尸王顶部大血条
+    // 熔岩尸王顶部大血条（叠加护盾条与破盾虚弱态）
     if (snap.bossRef && snap.bossRef.active && !snap.bossRef.dying) {
       ctx.save();
+      const bs = snap.bossState;
       const bossBarY = top + 106;
-      drawRoundedRect(ctx, 74, bossBarY, LOGICAL_WIDTH - 148, 34, 12);
+      const barW = LOGICAL_WIDTH - 148;
+      drawRoundedRect(ctx, 74, bossBarY, barW, 34, 12);
       ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
       ctx.fill();
-      const ratio = Math.max(0, snap.bossRef.hp / snap.bossRef.maxHp);
+
+      const ratio = Math.max(0, snap.bossRef.hp / Math.max(1, snap.bossRef.maxHp));
       if (ratio > 0.01) {
-        drawRoundedRect(ctx, 78, bossBarY + 4, Math.max(16, (LOGICAL_WIDTH - 156) * ratio), 26, 9);
-        ctx.fillStyle = '#ef4444';
+        drawRoundedRect(ctx, 78, bossBarY + 4, Math.max(16, (barW - 8) * ratio), 26, 9);
+        ctx.fillStyle = bs.action === 'STUNNED' ? '#eab308' : '#ef4444';
         ctx.fill();
       }
+
+      if (bs.shieldActive && bs.shieldMaxHp > 0) {
+        const sRatio = Math.max(0, Math.min(1, bs.shieldHp / bs.shieldMaxHp));
+        if (sRatio > 0.01) {
+          drawRoundedRect(ctx, 78, bossBarY + 4, Math.max(14, (barW - 8) * sRatio), 26, 9);
+          ctx.fillStyle = 'rgba(56, 189, 248, 0.82)';
+          ctx.fill();
+        }
+        ctx.strokeStyle = '#fb923c';
+        ctx.lineWidth = 2.5;
+        drawRoundedRect(ctx, 74, bossBarY, barW, 34, 12);
+        ctx.stroke();
+      }
+
       ctx.fillStyle = '#ffffff';
-      ctx.font = '900 19px "PingFang SC", "Microsoft YaHei", sans-serif';
+      ctx.font = `900 19px ${FONT_FAMILY}`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      const bossBarLabel =
-        snap.mode === 'endless'
-          ? `第${snap.endlessWave}波 ${snap.level.bossName}  ${Math.ceil(snap.bossRef.hp)} / ${snap.bossRef.maxHp}`
-          : `${snap.level.bossName}  ${Math.ceil(snap.bossRef.hp)} / ${snap.bossRef.maxHp}`;
+      const prefix =
+        snap.mode === 'endless' ? `第${snap.endlessWave}波 ${snap.level.bossName}` : snap.level.bossName;
+      let bossBarLabel = `${prefix}  ${Math.ceil(snap.bossRef.hp)} / ${snap.bossRef.maxHp}`;
+      if (bs.shieldActive) {
+        bossBarLabel = `${prefix}  护盾 ${Math.ceil(bs.shieldHp)} (${Math.ceil(bs.shieldTimer)}秒)`;
+      } else if (bs.action === 'STUNNED' && bs.stunTimer > 0) {
+        bossBarLabel = `${prefix}  破盾虚弱 ${bs.stunTimer.toFixed(1)}秒`;
+      }
+      ctx.fillStyle = '#0f172a';
+      ctx.fillText(bossBarLabel, LOGICAL_WIDTH / 2 + 1.5, bossBarY + 18.5);
+      ctx.fillStyle = '#ffffff';
       ctx.fillText(bossBarLabel, LOGICAL_WIDTH / 2, bossBarY + 17);
+      ctx.restore();
+    }
+
+    // 登场 1.5 秒红色闪烁警戒横幅
+    if (snap.bossState.alertPending && snap.bossState.alertTimer > 0) {
+      const pulse = Math.abs(Math.sin(snap.clock * 16));
+      const bannerY = 330;
+      const bannerH = 114;
+      ctx.save();
+      ctx.fillStyle = `rgba(185, 28, 28, ${(0.58 + 0.3 * pulse).toFixed(2)})`;
+      ctx.fillRect(0, bannerY, LOGICAL_WIDTH, bannerH);
+      ctx.fillStyle = '#fef08a';
+      ctx.fillRect(0, bannerY, LOGICAL_WIDTH, 6);
+      ctx.fillRect(0, bannerY + bannerH - 6, LOGICAL_WIDTH, 6);
+
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = `900 40px ${FONT_FAMILY}`;
+      ctx.fillStyle = '#1f1004';
+      ctx.fillText('警告：熔岩尸王逼近！', LOGICAL_WIDTH / 2 + 2, bannerY + bannerH * 0.5 + 2);
+      ctx.fillStyle = pulse > 0.45 ? '#ffffff' : '#fef08a';
+      ctx.fillText('警告：熔岩尸王逼近！', LOGICAL_WIDTH / 2, bannerY + bannerH * 0.5);
       ctx.restore();
     }
 
@@ -721,6 +1260,7 @@ export class Renderer {
     }
 
     if (snap.airdrop.active && !snap.airdrop.claimed && snap.state === 'PLAYING') {
+      this.hudAirdropBtnStyle.pulseScale = 1 + Math.sin(snap.clock * 8) * 0.04;
       drawButton(
         ctx,
         this.hitBoxes,
@@ -731,15 +1271,53 @@ export class Renderer {
         52,
         '超级空投',
         actions.onTriggerAirdrop,
-        {
-          fillTop: '#fbbf24',
-          fillBottom: '#d97706',
-          borderColor: '#fef9c3',
-          textColor: '#0f172a',
-          fontSize: 20,
-          radius: 16,
-          pulseScale: 1 + Math.sin(snap.clock * 8) * 0.04,
-        },
+        this.hudAirdropBtnStyle,
+      );
+    }
+  }
+
+  private drawMenuUpgradeCard(
+    cx: number,
+    cy: number,
+    cardW: number,
+    id: string,
+    title: string,
+    levelText: string,
+    cost: number,
+    canBuy: boolean,
+    isMax: boolean,
+    onClick: () => void,
+    disableInteraction: boolean,
+  ): void {
+    const ctx = this.ctx;
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
+    drawRoundedRect(ctx, cx, cy, cardW, 146, 16);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(148, 163, 184, 0.35)';
+    ctx.lineWidth = 2;
+    drawRoundedRect(ctx, cx, cy, cardW, 146, 16);
+    ctx.stroke();
+
+    ctx.fillStyle = '#f8fafc';
+    ctx.font = `800 20px ${FONT_FAMILY}`;
+    ctx.fillText(title, cx + cardW * 0.5, cy + 28);
+
+    ctx.fillStyle = '#38bdf8';
+    ctx.font = `900 24px ${FONT_FAMILY}`;
+    ctx.fillText(levelText, cx + cardW * 0.5, cy + 62);
+
+    if (!disableInteraction) {
+      drawButton(
+        ctx,
+        this.hitBoxes,
+        id,
+        cx + 14,
+        cy + 86,
+        cardW - 28,
+        48,
+        isMax ? '已满级' : `${cost} 金币`,
+        onClick,
+        canBuy && !isMax ? this.upgradeBuyStyle : this.upgradeDisabledStyle,
       );
     }
   }
@@ -753,11 +1331,7 @@ export class Renderer {
     const top = Math.max(20, snap.safeTop + 10);
 
     ctx.save();
-    const grad = ctx.createLinearGradient(0, 0, 0, LOGICAL_HEIGHT);
-    grad.addColorStop(0, 'rgba(9, 13, 20, 0.72)');
-    grad.addColorStop(0.55, 'rgba(9, 13, 20, 0.48)');
-    grad.addColorStop(1, 'rgba(9, 13, 20, 0.88)');
-    ctx.fillStyle = grad;
+    ctx.fillStyle = this.menuOverlayGrad;
     ctx.fillRect(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT);
 
     // 顶部金币栏、军械库、静音按钮
@@ -820,12 +1394,11 @@ export class Renderer {
       ctx.drawImage(this.assets.sprites.boss, LOGICAL_WIDTH / 2 - 110, 268 + bob, 220, 220);
     }
 
-    // 游戏主标题
+    // 主菜单标题描边改用偏移深色 fillText 加速
     ctx.textAlign = 'center';
-    ctx.font = '900 68px "PingFang SC", "Microsoft YaHei", sans-serif';
-    ctx.lineWidth = 10;
-    ctx.strokeStyle = '#1e1004';
-    ctx.strokeText('末日枪手突围', LOGICAL_WIDTH / 2, 162);
+    ctx.font = `900 68px ${FONT_FAMILY}`;
+    ctx.fillStyle = '#1e1004';
+    ctx.fillText('末日枪手突围', LOGICAL_WIDTH / 2 + 3, 165);
     ctx.fillStyle = '#fbbf24';
     ctx.fillText('末日枪手突围', LOGICAL_WIDTH / 2, 162);
 
@@ -892,83 +1465,53 @@ export class Renderer {
       512,
     );
 
-    // 局外永久养成区（3 项紧凑卡片）
+    // 局外永久养成区（3 项紧凑卡片，零临时对象数组分配）
     const cardW = 198;
     const gap = 16;
     const startX = (LOGICAL_WIDTH - (cardW * 3 + gap * 2)) / 2;
-    const upgrades = [
-      {
-        id: 'upg_atk',
-        title: '基础攻击',
-        levelText: `${snap.save.attackLevel}级`,
-        cost: snap.upgradeCosts.attack,
-        canBuy: snap.canAfford.attack,
-        isMax: snap.save.attackLevel >= 20,
-        onClick: actions.onUpgradeAttack,
-      },
-      {
-        id: 'upg_spd',
-        title: '初始射速',
-        levelText: `${snap.save.fireRateLevel}级`,
-        cost: snap.upgradeCosts.firerate,
-        canBuy: snap.canAfford.firerate,
-        isMax: snap.save.fireRateLevel >= 20,
-        onClick: actions.onUpgradeFireRate,
-      },
-      {
-        id: 'upg_sqd',
-        title: '初始人数',
-        levelText: `${snap.save.squadLevel}人`,
-        cost: snap.upgradeCosts.squad,
-        canBuy: snap.canAfford.squad,
-        isMax: snap.save.squadLevel >= 6,
-        onClick: actions.onUpgradeSquad,
-      },
-    ];
-
-    upgrades.forEach((u, idx) => {
-      const cx = startX + idx * (cardW + gap);
-      const cy = 540;
-      ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
-      drawRoundedRect(ctx, cx, cy, cardW, 146, 16);
-      ctx.fill();
-      ctx.strokeStyle = 'rgba(148, 163, 184, 0.35)';
-      ctx.lineWidth = 2;
-      drawRoundedRect(ctx, cx, cy, cardW, 146, 16);
-      ctx.stroke();
-
-      ctx.fillStyle = '#f8fafc';
-      ctx.font = '800 20px "PingFang SC", "Microsoft YaHei", sans-serif';
-      ctx.fillText(u.title, cx + cardW / 2, cy + 28);
-
-      ctx.fillStyle = '#38bdf8';
-      ctx.font = '900 24px "PingFang SC", "Microsoft YaHei", sans-serif';
-      ctx.fillText(u.levelText, cx + cardW / 2, cy + 62);
-
-      if (!disableInteraction) {
-        drawButton(
-          ctx,
-          this.hitBoxes,
-          u.id,
-          cx + 14,
-          cy + 86,
-          cardW - 28,
-          48,
-          u.isMax ? '已满级' : `${u.cost} 金币`,
-          u.onClick,
-          {
-            fillTop: u.canBuy ? '#22c55e' : '#334155',
-            fillBottom: u.canBuy ? '#16a34a' : '#1e293b',
-            fontSize: 18,
-            radius: 12,
-            disabled: !u.canBuy || u.isMax,
-          },
-        );
-      }
-    });
+    this.drawMenuUpgradeCard(
+      startX,
+      540,
+      cardW,
+      'upg_atk',
+      '基础攻击',
+      `${snap.save.attackLevel}级`,
+      snap.upgradeCosts.attack,
+      snap.canAfford.attack,
+      snap.save.attackLevel >= 20,
+      actions.onUpgradeAttack,
+      disableInteraction,
+    );
+    this.drawMenuUpgradeCard(
+      startX + cardW + gap,
+      540,
+      cardW,
+      'upg_spd',
+      '初始射速',
+      `${snap.save.fireRateLevel}级`,
+      snap.upgradeCosts.firerate,
+      snap.canAfford.firerate,
+      snap.save.fireRateLevel >= 20,
+      actions.onUpgradeFireRate,
+      disableInteraction,
+    );
+    this.drawMenuUpgradeCard(
+      startX + (cardW + gap) * 2,
+      540,
+      cardW,
+      'upg_sqd',
+      '初始人数',
+      `${snap.save.squadLevel}人`,
+      snap.upgradeCosts.squad,
+      snap.canAfford.squad,
+      snap.save.squadLevel >= 6,
+      actions.onUpgradeSquad,
+      disableInteraction,
+    );
 
     // 主菜单核心开局按钮区（底边最高 998 <= 1095，严格保留防误触间距）
     if (!disableInteraction) {
+      this.menuSuperBtnStyle.pulseScale = 1 + Math.sin(snap.clock * 4) * 0.015;
       drawButton(
         ctx,
         this.hitBoxes,
@@ -979,17 +1522,10 @@ export class Renderer {
         88,
         '看广告满配开局（加特林+5人）',
         actions.onStartSuperBattle,
-        {
-          fillTop: '#f59e0b',
-          fillBottom: '#d97706',
-          borderColor: '#fde68a',
-          textColor: '#0f172a',
-          fontSize: 27,
-          radius: 22,
-          pulseScale: 1 + Math.sin(snap.clock * 4) * 0.015,
-        },
+        this.menuSuperBtnStyle,
       );
 
+      this.menuStartBtnStyle.subText = `第${snap.level.id}关 · ${snap.level.name}`;
       drawButton(
         ctx,
         this.hitBoxes,
@@ -1000,17 +1536,10 @@ export class Renderer {
         86,
         '开始关卡突围',
         actions.onStartBattle,
-        {
-          fillTop: '#10b981',
-          fillBottom: '#059669',
-          borderColor: '#6ee7b7',
-          fontSize: 32,
-          subText: `第${snap.level.id}关 · ${snap.level.name}`,
-          radius: 22,
-        },
+        this.menuStartBtnStyle,
       );
 
-      const endlessSub =
+      this.menuEndlessBtnStyle.subText =
         snap.save.endlessBestWave > 0
           ? `最高第 ${snap.save.endlessBestWave} 波 · 最高击杀 ${snap.save.endlessBestKills}`
           : '无限波次尸王 · 挑战生存极限';
@@ -1025,15 +1554,7 @@ export class Renderer {
         76,
         '无尽尸潮模式',
         actions.onStartEndless,
-        {
-          fillTop: '#9333ea',
-          fillBottom: '#6b21a8',
-          borderColor: '#f5d0fe',
-          fontSize: 26,
-          subText: endlessSub,
-          subTextColor: '#fde047',
-          radius: 20,
-        },
+        this.menuEndlessBtnStyle,
       );
     }
 
@@ -1470,6 +1991,11 @@ export class Renderer {
       }
 
       const btnLabel = equipped ? '已装备' : unlocked ? '立即装备' : '看广告加1';
+      let clickFn = this.armoryClickFns.get(skin.id);
+      if (!clickFn) {
+        clickFn = () => actions.onArmorySkinAction(skin);
+        this.armoryClickFns.set(skin.id, clickFn);
+      }
       drawButton(
         ctx,
         this.hitBoxes,
@@ -1479,7 +2005,7 @@ export class Renderer {
         140,
         72,
         btnLabel,
-        () => actions.onArmorySkinAction(skin),
+        clickFn,
         {
           fillTop: equipped ? '#475569' : unlocked ? '#22c55e' : '#f59e0b',
           fillBottom: equipped ? '#334155' : unlocked ? '#16a34a' : '#d97706',

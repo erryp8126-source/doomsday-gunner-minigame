@@ -89,8 +89,10 @@ const SOUND_TO_BUCKET: Record<SoundEffectName, { key: AudioBucketKey; src: strin
   hit: { key: 'gate', src: 'assets/audio/gate.wav', volume: 0.55 },
 };
 
+const MAX_PIXEL_RATIO = 1.5;
 const AUDIO_POOL_SIZE_PER_BUCKET = 3;
-const AUDIO_THROTTLE_MS = 50;
+const AUDIO_THROTTLE_MS = 55;
+const AUDIO_CRIT_THROTTLE_MS = 90;
 
 export type SoundPlayerFn = (name: SoundEffectName, pitchOffset?: number) => void;
 export type AudioStateFn = (suspended: boolean) => void;
@@ -118,10 +120,12 @@ export class PlatformSDK {
   private bannerAd: any = null;
   private interstitialAd: any = null;
 
-  /** 小游戏端 InnerAudioContext 实例池（按音效桶各复用 3 个实例并做 50ms 节流） */
+  /** 小游戏端 InnerAudioContext 实例池（按音效桶各复用 3 个实例并做 55ms/90ms 节流） */
   private readonly minigameAudioPool: any[] = [];
   private readonly minigameAudioBuckets = new Map<AudioBucketKey, AudioBucketState>();
+  private readonly minigameLastSoundMs = new Map<SoundEffectName, number>();
   private readonly memoryStorage = new Map<string, string>();
+  private readonly safeInsetsCache = { top: 0, bottom: 0 };
 
   constructor() {
     this.runtime = this.detectRuntime();
@@ -214,14 +218,13 @@ export class PlatformSDK {
     return this.viewport;
   }
 
-  /** 获取当前逻辑视口顶部/底部安全区内边距（映射至 720×1280 坐标系） */
+  /** 获取当前逻辑视口顶部/底部安全区内边距（映射至 720×1280 坐标系，复用缓存对象避免 GC） */
   public getLogicalSafeInsets(): { top: number; bottom: number } {
     const vp = this.viewport;
     const scaleY = LOGICAL_HEIGHT / Math.max(1, vp.height);
-    return {
-      top: Math.round(vp.safeAreaTop * scaleY),
-      bottom: Math.round(vp.safeAreaBottom * scaleY),
-    };
+    this.safeInsetsCache.top = Math.round(vp.safeAreaTop * scaleY);
+    this.safeInsetsCache.bottom = Math.round(vp.safeAreaBottom * scaleY);
+    return this.safeInsetsCache;
   }
 
   private queryViewport(): ViewportInfo {
@@ -232,7 +235,7 @@ export class PlatformSDK {
       return {
         width: info.windowWidth,
         height: info.windowHeight,
-        pixelRatio: Math.min(info.pixelRatio || 2, 3),
+        pixelRatio: Math.min(info.pixelRatio || 1, MAX_PIXEL_RATIO),
         safeAreaTop: Math.max(0, safe.top || 0),
         safeAreaBottom: Math.max(0, info.windowHeight - (safe.bottom || info.windowHeight)),
       };
@@ -244,7 +247,7 @@ export class PlatformSDK {
       return {
         width: info.windowWidth,
         height: info.windowHeight,
-        pixelRatio: Math.min(info.pixelRatio || 2, 3),
+        pixelRatio: Math.min(info.pixelRatio || 1, MAX_PIXEL_RATIO),
         safeAreaTop: Math.max(0, safe.top || 0),
         safeAreaBottom: Math.max(0, info.windowHeight - (safe.bottom || info.windowHeight)),
       };
@@ -256,7 +259,7 @@ export class PlatformSDK {
       return {
         width: Math.max(300, Math.round(rect.width)),
         height: Math.max(500, Math.round(rect.height)),
-        pixelRatio: Math.min(window.devicePixelRatio || 2, 3),
+        pixelRatio: Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO),
         safeAreaTop: 18,
         safeAreaBottom: 14,
       };
@@ -265,7 +268,7 @@ export class PlatformSDK {
     return {
       width: 390,
       height: 844,
-      pixelRatio: 2,
+      pixelRatio: MAX_PIXEL_RATIO,
       safeAreaTop: 0,
       safeAreaBottom: 0,
     };
@@ -598,9 +601,12 @@ export class PlatformSDK {
     }
 
     const nowMs = Date.now();
-    if (nowMs - bucket.lastPlayedMs < AUDIO_THROTTLE_MS) {
+    const minInterval = name === 'crit' ? AUDIO_CRIT_THROTTLE_MS : AUDIO_THROTTLE_MS;
+    const prevNameMs = this.minigameLastSoundMs.get(name) ?? 0;
+    if (nowMs - prevNameMs < minInterval || nowMs - bucket.lastPlayedMs < AUDIO_THROTTLE_MS) {
       return;
     }
+    this.minigameLastSoundMs.set(name, nowMs);
     bucket.lastPlayedMs = nowMs;
 
     let ctx: any;
