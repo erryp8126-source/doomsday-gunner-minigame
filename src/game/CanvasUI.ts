@@ -160,15 +160,15 @@ export function drawButton(
   drawRoundedRect(ctx, x, y, w, h, radius);
   ctx.fill();
 
-  // 顶部高光条
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.22)';
-  drawRoundedRect(ctx, x + 6, y + 4, w - 12, Math.max(8, h * 0.24), Math.max(4, radius - 6));
+  // 顶部高光条（克制弱化，避免亮白带横切文字区）
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.10)';
+  drawRoundedRect(ctx, x + 6, y + 3, w - 12, Math.max(4, h * 0.14), Math.max(3, radius - 4));
   ctx.fill();
 
   // 描边
   if (style.borderColor) {
     ctx.strokeStyle = style.disabled ? '#64748b' : style.borderColor;
-    ctx.lineWidth = 2.5;
+    ctx.lineWidth = 2;
     drawRoundedRect(ctx, x, y, w, h, radius);
     ctx.stroke();
   }
@@ -181,12 +181,17 @@ export function drawButton(
   ctx.font = `900 ${fontSize}px "PingFang SC", "Microsoft YaHei", sans-serif`;
 
   if (style.subText) {
-    ctx.fillText(label, cx, cy - fontSize * 0.34);
-    ctx.font = `700 ${Math.max(16, Math.round(fontSize * 0.62))}px "PingFang SC", "Microsoft YaHei", sans-serif`;
+    const subSize = Math.max(14, Math.round(fontSize * 0.58));
+    const lineGap = Math.max(6, Math.round(fontSize * 0.24));
+    const totalH = fontSize + lineGap + subSize;
+    const mainY = cy - (totalH - fontSize) * 0.5;
+    const subY = cy + (totalH - subSize) * 0.5;
+    ctx.fillText(label, cx, mainY, w - 24);
+    ctx.font = `700 ${subSize}px "PingFang SC", "Microsoft YaHei", sans-serif`;
     ctx.fillStyle = style.disabled ? '#94a3b8' : (style.subTextColor ?? '#fef08a');
-    ctx.fillText(style.subText, cx, cy + fontSize * 0.46);
+    ctx.fillText(style.subText, cx, subY, w - 24);
   } else {
-    ctx.fillText(label, cx, cy + 1);
+    ctx.fillText(label, cx, cy + 1, w - 20);
   }
 
   ctx.restore();
@@ -237,29 +242,33 @@ export function drawPanelCard(
   accentColor = '#f59e0b',
 ): void {
   ctx.save();
-  ctx.fillStyle = 'rgba(2, 6, 23, 0.65)';
-  drawRoundedRect(ctx, x, y + 10, w, h, 28);
+  ctx.fillStyle = 'rgba(2, 6, 23, 0.7)';
+  drawRoundedRect(ctx, x, y + 10, w, h, 24);
   ctx.fill();
 
-  ctx.fillStyle = getCachedLinearGradient(ctx, x, y, x, y + h, '#1e293b', '#0f172a');
-  drawRoundedRect(ctx, x, y, w, h, 28);
+  ctx.fillStyle = getCachedLinearGradient(ctx, x, y, x, y + h, '#162033', '#0b1120');
+  drawRoundedRect(ctx, x, y, w, h, 24);
   ctx.fill();
 
   ctx.strokeStyle = accentColor;
-  ctx.lineWidth = 3;
-  drawRoundedRect(ctx, x, y, w, h, 28);
+  ctx.lineWidth = 2;
+  drawRoundedRect(ctx, x, y, w, h, 24);
   ctx.stroke();
 
-  // 顶部标题丝带
+  // 顶部标题栏（深底胶囊 + 底部主题细分割线，保证标题高对比度）
   const headerH = 68;
-  ctx.fillStyle = getCachedLinearGradient(ctx, x, y, x + w, y, '#0f172a', '#0f172a', accentColor);
-  drawRoundedRect(ctx, x + 10, y + 10, w - 20, headerH, 20);
+  ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
+  drawRoundedRect(ctx, x + 12, y + 12, w - 24, headerH, 16);
+  ctx.fill();
+
+  ctx.fillStyle = accentColor;
+  drawRoundedRect(ctx, x + 28, y + 12 + headerH - 3, w - 56, 3, 2);
   ctx.fill();
 
   ctx.fillStyle = '#ffffff';
   ctx.font = '900 32px "PingFang SC", "Microsoft YaHei", sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(title, x + w * 0.5, y + 10 + headerH * 0.5);
+  ctx.fillText(title, x + w * 0.5, y + 12 + headerH * 0.5 - 1);
   ctx.restore();
 }

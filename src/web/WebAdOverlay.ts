@@ -46,7 +46,7 @@ export function mountWebAdOverlay(
   bannerEl.className = 'sim-banner hidden';
   bannerEl.innerHTML = `
     <span class="sim-banner-badge">微信Banner</span>
-    <span class="sim-banner-text">模拟安全区横幅广告 · 战斗中自动隐藏</span>
+    <span class="sim-banner-text">安全区横幅 · 战斗自动隐藏</span>
     <span class="sim-banner-cta">去看看</span>
   `;
   phoneFrame.appendChild(bannerEl);
@@ -89,13 +89,14 @@ export function mountWebAdOverlay(
   const btnClose = modalEl.querySelector('[data-role="btn-close"]') as HTMLButtonElement;
   const btnFinish = modalEl.querySelector('[data-role="btn-finish"]') as HTMLButtonElement;
 
-  // 3. 右上角「IAA 商业化调试台」
+  // 3. 右上角「IAA 商业化调试台」（移动端窄屏默认收起，避免遮挡首屏）
+  const isNarrow = window.innerWidth <= 980;
   const debugEl = document.createElement('aside');
-  debugEl.className = 'iaa-debug-panel';
+  debugEl.className = isNarrow ? 'iaa-debug-panel collapsed' : 'iaa-debug-panel';
   debugEl.innerHTML = `
     <div class="iaa-debug-header" data-role="debug-header">
       <span class="iaa-debug-title">📊 IAA 商业化调试台</span>
-      <button type="button" class="iaa-debug-toggle" data-role="debug-toggle">收起</button>
+      <button type="button" class="iaa-debug-toggle" data-role="debug-toggle">${isNarrow ? '展开' : '收起'}</button>
     </div>
     <div class="iaa-debug-body">
       <div class="iaa-row">

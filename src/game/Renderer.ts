@@ -16,7 +16,6 @@ import {
   type TrooperPoint,
 } from './GameEngine';
 import {
-  BANNER_ZONE_TOP,
   LOGICAL_HEIGHT,
   LOGICAL_WIDTH,
   PLAYER_Y,
@@ -163,7 +162,7 @@ const HUD_PAUSE_BTN_STYLE: ButtonStyle = {
   fillBottom: '#1e293b',
   borderColor: '#64748b',
   fontSize: 20,
-  radius: 16,
+  radius: 12,
 };
 
 const HUD_MUTE_ON_BTN_STYLE: ButtonStyle = {
@@ -171,7 +170,7 @@ const HUD_MUTE_ON_BTN_STYLE: ButtonStyle = {
   fillBottom: '#334155',
   borderColor: '#64748b',
   fontSize: 20,
-  radius: 16,
+  radius: 12,
 };
 
 const HUD_MUTE_OFF_BTN_STYLE: ButtonStyle = {
@@ -179,7 +178,7 @@ const HUD_MUTE_OFF_BTN_STYLE: ButtonStyle = {
   fillBottom: '#0f172a',
   borderColor: '#64748b',
   fontSize: 20,
-  radius: 16,
+  radius: 12,
 };
 
 function compareZombieY(a: Zombie, b: Zombie): number {
@@ -213,19 +212,20 @@ export class Renderer {
   private readonly squadPosBuf = createTrooperBuffer();
   private readonly floatFontCache = new Map<number, string>();
   private readonly armoryClickFns = new Map<string, () => void>();
+  private lastHudBottomY = 122;
 
   private readonly damageVignetteGrad: CanvasGradient;
   private readonly menuOverlayGrad: CanvasGradient;
 
   private readonly menuSuperBtnStyle: ButtonStyle = {
-    fillTop: '#f59e0b',
-    fillBottom: '#d97706',
-    borderColor: '#fde68a',
-    textColor: '#0f172a',
+    fillTop: '#ea580c',
+    fillBottom: '#c2410c',
+    borderColor: '#fed7aa',
+    textColor: '#ffffff',
     fontSize: 22,
     subText: '加特林 + 5人开局',
-    subTextColor: '#451a03',
-    radius: 18,
+    subTextColor: '#fef3c7',
+    radius: 16,
   };
 
   private readonly menuStartBtnStyle: ButtonStyle = {
@@ -234,7 +234,7 @@ export class Renderer {
     borderColor: '#a7f3d0',
     fontSize: 34,
     subText: '',
-    radius: 22,
+    radius: 16,
     pulseScale: 1,
   };
 
@@ -245,7 +245,7 @@ export class Renderer {
     fontSize: 26,
     subText: '',
     subTextColor: '#fde047',
-    radius: 20,
+    radius: 16,
   };
 
   private readonly menuEndlessLockedBtnStyle: ButtonStyle = {
@@ -256,7 +256,7 @@ export class Renderer {
     fontSize: 24,
     subText: '完成第 1 关解锁（奖励丰厚金币）',
     subTextColor: '#fde047',
-    radius: 20,
+    radius: 16,
   };
 
   private readonly upgradeBuyStyle: ButtonStyle = {
@@ -308,6 +308,7 @@ export class Renderer {
   public render(snap: RenderSnapshot, actions: RenderActions): void {
     const ctx = this.ctx;
     this.hitBoxes.clear();
+    this.lastHudBottomY = Math.max(22, snap.safeTop) + 104;
 
     ctx.save();
     if (snap.state === 'PLAYING') {
@@ -319,7 +320,9 @@ export class Renderer {
     this.renderGates(snap);
     this.renderBarrels(snap);
     this.renderZombies(snap);
-    this.renderSquad(snap);
+    if (snap.state !== 'MENU' && snap.state !== 'ARMORY' && snap.state !== 'AGE_MODAL') {
+      this.renderSquad(snap);
+    }
     this.renderBossProjectiles(snap);
     this.renderBulletsAndEffects(snap);
 
@@ -368,7 +371,8 @@ export class Renderer {
     }
 
     if (snap.toast) {
-      this.renderToast(snap.toast, snap.safeTop);
+      const inCombatHud = snap.state === 'PLAYING' || snap.state === 'PAUSED';
+      this.renderToast(snap.toast, snap.safeTop, inCombatHud);
     }
   }
 
@@ -399,7 +403,9 @@ export class Renderer {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.font = `700 17px ${FONT_FAMILY}`;
-    ctx.fillStyle = 'rgba(226, 232, 240, 0.36)';
+    ctx.fillStyle = 'rgba(2, 6, 23, 0.65)';
+    ctx.fillText('单指左右滑动操控', LOGICAL_WIDTH / 2 + 1, 1233);
+    ctx.fillStyle = 'rgba(248, 250, 252, 0.68)';
     ctx.fillText('单指左右滑动操控', LOGICAL_WIDTH / 2, 1232);
     ctx.restore();
   }
@@ -1122,7 +1128,7 @@ export class Renderer {
       snap.mode === 'endless'
         ? `${snap.weapon.name} · 无尽第${snap.endlessWave}波`
         : `${snap.weapon.name} · ${snap.level.name}`;
-    ctx.fillText(hudTitle, 102, top + 30);
+    ctx.fillText(hudTitle, 102, top + 30, 224);
 
     ctx.fillStyle = '#fbbf24';
     ctx.font = 'bold 20px "PingFang SC", "Microsoft YaHei", sans-serif';
@@ -1130,12 +1136,12 @@ export class Renderer {
       snap.mode === 'endless'
         ? `击杀 ${snap.kills}  金币 ${snap.runCoins}  ${Math.floor(snap.totalSurviveSec)}秒`
         : `击杀 ${snap.kills}  金币 ${snap.runCoins}`;
-    ctx.fillText(subStats, 102, top + 64);
+    ctx.fillText(subStats, 102, top + 64, 232);
 
     // 进度条
-    const bx = 342;
+    const bx = 350;
     const by = top + 20;
-    const bw = 186;
+    const bw = 178;
     const bh = 18;
     const prog = snap.bossState.alertPending
       ? 1
@@ -1264,33 +1270,7 @@ export class Renderer {
       ctx.restore();
     }
 
-    // 实时连击 ×N 徽章
-    if (snap.combo >= 2) {
-      ctx.save();
-      ctx.translate(LOGICAL_WIDTH - 108, top + 224);
-      ctx.scale(snap.comboPulse, snap.comboPulse);
-      drawRoundedRect(ctx, -88, -38, 176, 76, 16);
-      ctx.fillStyle = snap.combo >= 25 ? 'rgba(220, 38, 38, 0.86)' : 'rgba(217, 119, 6, 0.86)';
-      ctx.fill();
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = '#fde047';
-      ctx.stroke();
-
-      ctx.textAlign = 'center';
-      ctx.fillStyle = '#fef08a';
-      ctx.font = '900 32px "PingFang SC", "Microsoft YaHei", sans-serif';
-      ctx.fillText(`连击 ×${snap.combo}`, 0, -4);
-
-      drawRoundedRect(ctx, -68, 20, 136, 8, 4);
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
-      ctx.fill();
-      drawRoundedRect(ctx, -68, 20, 136 * Math.max(0, snap.comboTimer / 2.7), 8, 4);
-      ctx.fillStyle = '#fef08a';
-      ctx.fill();
-      ctx.restore();
-    }
-
-    // 主题关横幅、分段引导横幅、切枪高光横幅、火力翻倍 / 助战 / 满编强化提示条 & 右侧空投按钮
+    // 主题关横幅、分段引导横幅、切枪高光横幅、火力翻倍 / 助战 / 满编强化提示条 & 实时连击 / 右侧空投按钮
     let subY =
       snap.bossRef && snap.bossRef.active && !snap.bossRef.dying ? top + 148 : top + 104;
     if (snap.themeBanner.active) {
@@ -1353,6 +1333,36 @@ export class Renderer {
       );
       ctx.restore();
       subY += 38;
+    }
+
+    this.lastHudBottomY = subY;
+
+    // 实时连击 ×N 徽章（避让顶部血条、各类引导横幅与 Toast）
+    if (snap.combo >= 2) {
+      const toastReserve = snap.toast ? 54 : 0;
+      const comboY = Math.max(top + 224, subY + toastReserve + 44);
+      ctx.save();
+      ctx.translate(LOGICAL_WIDTH - 108, comboY);
+      ctx.scale(snap.comboPulse, snap.comboPulse);
+      drawRoundedRect(ctx, -88, -38, 176, 76, 12);
+      ctx.fillStyle = snap.combo >= 25 ? 'rgba(220, 38, 38, 0.86)' : 'rgba(217, 119, 6, 0.86)';
+      ctx.fill();
+      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = '#fde047';
+      ctx.stroke();
+
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#fef08a';
+      ctx.font = '900 32px "PingFang SC", "Microsoft YaHei", sans-serif';
+      ctx.fillText(`连击 ×${snap.combo}`, 0, -4);
+
+      drawRoundedRect(ctx, -68, 20, 136, 8, 4);
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+      ctx.fill();
+      drawRoundedRect(ctx, -68, 20, 136 * Math.max(0, snap.comboTimer / 2.7), 8, 4);
+      ctx.fillStyle = '#fef08a';
+      ctx.fill();
+      ctx.restore();
     }
 
     if (snap.airdrop.active && !snap.airdrop.claimed && snap.state === 'PLAYING') {
@@ -1675,7 +1685,7 @@ export class Renderer {
           fillBottom: '#5b21b6',
           borderColor: '#ddd6fe',
           fontSize: 19,
-          radius: 15,
+          radius: 12,
         },
       );
       if (snap.hasArmoryRedDot) {
@@ -1697,7 +1707,7 @@ export class Renderer {
           fillBottom: snap.save.vibrateEnabled ? '#0369a1' : '#1e293b',
           borderColor: snap.save.vibrateEnabled ? '#7dd3fc' : '#64748b',
           fontSize: 18,
-          radius: 15,
+          radius: 12,
         },
       );
 
@@ -1715,7 +1725,7 @@ export class Renderer {
           fillTop: '#334155',
           fillBottom: '#1e293b',
           fontSize: 18,
-          radius: 15,
+          radius: 12,
         },
       );
     }
@@ -1760,20 +1770,20 @@ export class Renderer {
           ctx,
           this.hitBoxes,
           'menu_sidebar_gift',
-          LOGICAL_WIDTH - 186,
+          LOGICAL_WIDTH - 196,
           top + 56,
-          164,
-          50,
+          174,
+          56,
           '侧边栏复访礼',
           actions.onClickSidebarGift,
           {
             fillTop: !snap.canClaimSidebarReward ? '#475569' : snap.sidebar.fromSidebar ? '#22c55e' : '#0284c7',
             fillBottom: !snap.canClaimSidebarReward ? '#334155' : snap.sidebar.fromSidebar ? '#16a34a' : '#0369a1',
             borderColor: '#fef08a',
-            fontSize: 17,
+            fontSize: 16,
             subText: sidebarSub,
             subTextColor: '#fef08a',
-            radius: 14,
+            radius: 12,
             disabled: !snap.canClaimSidebarReward,
           },
         );
@@ -1783,13 +1793,15 @@ export class Renderer {
       }
     }
 
-    const titleFontSize = top > 70 ? 52 : 68;
-    const titleY = Math.max(162, top + 84);
-    const levelY = Math.max(206, top + 124);
+    const isCapsule = top > 70;
+    const offsetY = isCapsule ? 40 : 0;
+    const titleFontSize = isCapsule ? 50 : 60;
+    const titleY = isCapsule ? top + 142 : 174;
+    const levelY = titleY + (isCapsule ? 48 : 46);
     const hasThemeTag = snap.level.theme !== 'normal';
     const levelBottom = levelY + (hasThemeTag ? 78 : 48);
-    const bossAvailH = Math.max(110, 464 - levelBottom);
-    const bossSize = Math.min(200, Math.round(bossAvailH - 12));
+    const bossAvailH = Math.max(100, 472 + offsetY - levelBottom);
+    const bossSize = Math.min(196, Math.round(bossAvailH - 12));
     const bossY = levelBottom + Math.round((bossAvailH - bossSize) * 0.5);
 
     // 2D 精绘熔岩尸王展示
@@ -1859,7 +1871,7 @@ export class Renderer {
           fillTop: '#334155',
           fillBottom: '#1e293b',
           fontSize: 18,
-          radius: 14,
+          radius: 12,
           disabled: snap.save.selectedLevel <= 1,
         },
       );
@@ -1877,7 +1889,7 @@ export class Renderer {
           fillTop: '#334155',
           fillBottom: '#1e293b',
           fontSize: 18,
-          radius: 14,
+          radius: 12,
           disabled: snap.save.selectedLevel >= snap.save.unlockedLevel,
         },
       );
@@ -1895,11 +1907,11 @@ export class Renderer {
     ctx.fillText(
       `${titlePrefix}最高击杀：${snap.save.bestKills} · 涂装：${snap.skin.name}${coinSuffix}`,
       LOGICAL_WIDTH / 2,
-      480,
+      480 + offsetY,
     );
 
     // 里程碑解锁预告条
-    drawRoundedRect(ctx, 56, 498, LOGICAL_WIDTH - 112, 32, 16);
+    drawRoundedRect(ctx, 56, 498 + offsetY, LOGICAL_WIDTH - 112, 32, 12);
     ctx.fillStyle = snap.nextMilestone ? 'rgba(15, 23, 42, 0.86)' : 'rgba(120, 53, 15, 0.88)';
     ctx.fill();
     ctx.strokeStyle = snap.nextMilestone ? '#38bdf8' : '#fde047';
@@ -1910,15 +1922,16 @@ export class Renderer {
     const milestoneText = snap.nextMilestone
       ? `距离下一里程碑：通关第 ${snap.nextMilestone.clearLevel} 关解锁${snap.nextMilestone.titleText}`
       : '终极荣誉徽章已解锁：末日传奇（主线 15 关全通）';
-    ctx.fillText(milestoneText, LOGICAL_WIDTH / 2, 514);
+    ctx.fillText(milestoneText, LOGICAL_WIDTH / 2, 514 + offsetY);
 
     // 局外永久养成区（3 项紧凑卡片，零临时对象数组分配）
     const cardW = 198;
     const gap = 16;
     const startX = (LOGICAL_WIDTH - (cardW * 3 + gap * 2)) / 2;
+    const upgY = 540 + offsetY;
     this.drawMenuUpgradeCard(
       startX,
-      540,
+      upgY,
       cardW,
       'upg_atk',
       '基础攻击',
@@ -1932,7 +1945,7 @@ export class Renderer {
     );
     this.drawMenuUpgradeCard(
       startX + cardW + gap,
-      540,
+      upgY,
       cardW,
       'upg_spd',
       '初始射速',
@@ -1946,7 +1959,7 @@ export class Renderer {
     );
     this.drawMenuUpgradeCard(
       startX + (cardW + gap) * 2,
-      540,
+      upgY,
       cardW,
       'upg_sqd',
       '初始人数',
@@ -1968,9 +1981,9 @@ export class Renderer {
         this.hitBoxes,
         'menu_start',
         64,
-        690,
+        698 + offsetY,
         LOGICAL_WIDTH - 128,
-        92,
+        isCapsule ? 88 : 92,
         '开始突围',
         actions.onStartBattle,
         this.menuStartBtnStyle,
@@ -1987,7 +2000,7 @@ export class Renderer {
           this.hitBoxes,
           'menu_endless',
           96,
-          804,
+          (isCapsule ? 802 : 808) + offsetY,
           LOGICAL_WIDTH - 192,
           74,
           '无尽狂潮模式',
@@ -1997,16 +2010,20 @@ export class Renderer {
         ctx.fillStyle = '#cbd5e1';
         ctx.font = `700 18px ${FONT_FAMILY}`;
         ctx.textAlign = 'center';
-        ctx.fillText('单指左右滑动自动射击，打爆木桶秒换神装', LOGICAL_WIDTH / 2, 916);
+        ctx.fillText(
+          '单指左右滑动自动射击，打爆木桶秒换神装',
+          LOGICAL_WIDTH / 2,
+          (isCapsule ? 912 : 922) + offsetY,
+        );
       } else {
         drawButton(
           ctx,
           this.hitBoxes,
           'menu_super_start',
           96,
-          798,
+          (isCapsule ? 800 : 806) + offsetY,
           LOGICAL_WIDTH - 192,
-          68,
+          isCapsule ? 66 : 68,
           '看广告满配开局',
           actions.onStartSuperBattle,
           this.menuSuperBtnStyle,
@@ -2017,9 +2034,9 @@ export class Renderer {
           this.hitBoxes,
           'menu_endless',
           96,
-          880,
+          (isCapsule ? 880 : 890) + offsetY,
           LOGICAL_WIDTH - 192,
-          74,
+          isCapsule ? 72 : 74,
           '无尽狂潮模式',
           actions.onStartEndless,
           snap.endlessUnlocked ? this.menuEndlessBtnStyle : this.menuEndlessLockedBtnStyle,
@@ -2029,11 +2046,11 @@ export class Renderer {
 
     // 标准《健康游戏忠告》（位于 Banner 上方安全区）
     ctx.fillStyle = 'rgba(15, 23, 42, 0.78)';
-    drawRoundedRect(ctx, 26, 1044, LOGICAL_WIDTH - 52, 84, 14);
+    drawRoundedRect(ctx, 26, 1044, LOGICAL_WIDTH - 52, 84, 12);
     ctx.fill();
     ctx.strokeStyle = 'rgba(148, 163, 184, 0.28)';
     ctx.lineWidth = 1.5;
-    drawRoundedRect(ctx, 26, 1044, LOGICAL_WIDTH - 52, 84, 14);
+    drawRoundedRect(ctx, 26, 1044, LOGICAL_WIDTH - 52, 84, 12);
     ctx.stroke();
 
     ctx.textAlign = 'center';
@@ -2043,14 +2060,6 @@ export class Renderer {
     ctx.fillText('抵制不良游戏，拒绝盗版游戏。注意自我保护，谨防受骗上当。', LOGICAL_WIDTH / 2, 1070);
     ctx.fillText('适度游戏益脑，沉迷游戏伤身。合理安排时间，享受健康生活。', LOGICAL_WIDTH / 2, 1102);
 
-    // 底部 Banner 安全区提示
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.55)';
-    drawRoundedRect(ctx, 44, BANNER_ZONE_TOP + 12, LOGICAL_WIDTH - 88, 76, 16);
-    ctx.fill();
-    ctx.fillStyle = '#64748b';
-    ctx.font = '700 18px "PingFang SC", "Microsoft YaHei", sans-serif';
-    ctx.fillText('底部广告安全区 · 严禁误触区域', LOGICAL_WIDTH / 2, BANNER_ZONE_TOP + 50);
-
     // 若素材仍在初始化加载，安全空白处显示进度提示
     if (!this.assets.isReady) {
       ctx.fillStyle = '#38bdf8';
@@ -2058,7 +2067,7 @@ export class Renderer {
       ctx.fillText(
         `精绘资源加载中 ${this.assets.loadedCount} / ${this.assets.totalCount}`,
         LOGICAL_WIDTH / 2,
-        1002,
+        1018,
       );
     }
 
@@ -2068,7 +2077,7 @@ export class Renderer {
   private renderSwipeTutorial(snap: RenderSnapshot): void {
     const ctx = this.ctx;
     const cx = Math.max(232, Math.min(LOGICAL_WIDTH - 232, snap.squadX));
-    const y = PLAYER_Y + 108;
+    const y = PLAYER_Y + 132;
     const offset = Math.sin(snap.clock * 6) * 14;
 
     ctx.save();
@@ -2107,7 +2116,7 @@ export class Renderer {
     ctx.fillRect(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT);
     drawPanelCard(ctx, 56, 260, LOGICAL_WIDTH - 112, 620, '适龄提示说明', '#22c55e');
 
-    drawRoundedRect(ctx, LOGICAL_WIDTH / 2 - 48, 360, 96, 54, 14);
+    drawRoundedRect(ctx, LOGICAL_WIDTH / 2 - 48, 360, 96, 54, 12);
     ctx.fillStyle = '#16a34a';
     ctx.fill();
     ctx.strokeStyle = '#86efac';
@@ -2143,7 +2152,7 @@ export class Renderer {
         fillBottom: '#16a34a',
         borderColor: '#bbf7d0',
         fontSize: 28,
-        radius: 20,
+        radius: 16,
       },
     );
     ctx.restore();
@@ -2170,7 +2179,7 @@ export class Renderer {
         fillTop: '#22c55e',
         fillBottom: '#16a34a',
         fontSize: 28,
-        radius: 20,
+        radius: 16,
       },
     );
 
@@ -2188,7 +2197,7 @@ export class Renderer {
         fillTop: snap.save.muted ? '#475569' : '#0284c7',
         fillBottom: snap.save.muted ? '#334155' : '#0369a1',
         fontSize: 22,
-        radius: 16,
+        radius: 12,
       },
     );
 
@@ -2206,7 +2215,7 @@ export class Renderer {
         fillTop: snap.save.vibrateEnabled ? '#0284c7' : '#475569',
         fillBottom: snap.save.vibrateEnabled ? '#0369a1' : '#334155',
         fontSize: 22,
-        radius: 16,
+        radius: 12,
       },
     );
 
@@ -2224,7 +2233,7 @@ export class Renderer {
         fillTop: '#f59e0b',
         fillBottom: '#d97706',
         fontSize: 24,
-        radius: 18,
+        radius: 12,
       },
     );
 
@@ -2242,7 +2251,7 @@ export class Renderer {
         fillTop: '#475569',
         fillBottom: '#334155',
         fontSize: 22,
-        radius: 18,
+        radius: 12,
       },
     );
     ctx.restore();
@@ -2277,7 +2286,7 @@ export class Renderer {
         borderColor: '#fecaca',
         fontSize: 28,
         subText: '超大范围爆炸溅射清屏',
-        radius: 20,
+        radius: 16,
       },
     );
 
@@ -2297,7 +2306,7 @@ export class Renderer {
         borderColor: '#fef08a',
         fontSize: 28,
         subText: '全队伤害与射速双重暴涨',
-        radius: 20,
+        radius: 16,
       },
     );
 
@@ -2315,7 +2324,7 @@ export class Renderer {
         fillTop: '#475569',
         fillBottom: '#334155',
         fontSize: 22,
-        radius: 18,
+        radius: 12,
       },
     );
     ctx.restore();
@@ -2377,7 +2386,7 @@ export class Renderer {
         borderColor: '#bbf7d0',
         fontSize: 30,
         subText: `保住已得 ${snap.runCoins} 金币继续冲关`,
-        radius: 22,
+        radius: 16,
       },
     );
 
@@ -2395,7 +2404,7 @@ export class Renderer {
         fillTop: '#475569',
         fillBottom: '#334155',
         fontSize: 22,
-        radius: 18,
+        radius: 12,
       },
     );
     ctx.restore();
@@ -2416,7 +2425,8 @@ export class Renderer {
     const resultBorder =
       snap.mode === 'endless' ? '#a855f7' : snap.isVictory ? '#22c55e' : '#ef4444';
 
-    drawPanelCard(ctx, 56, 178, LOGICAL_WIDTH - 112, 856, resultTitle, resultBorder);
+    const resultCardH = snap.showStuckAssist ? 832 : 736;
+    drawPanelCard(ctx, 56, 178, LOGICAL_WIDTH - 112, resultCardH, resultTitle, resultBorder);
 
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -2507,14 +2517,14 @@ export class Renderer {
     }
 
     ctx.fillStyle = growthReady ? 'rgba(22, 101, 52, 0.55)' : 'rgba(15, 23, 42, 0.78)';
-    drawRoundedRect(ctx, 76, 456, LOGICAL_WIDTH - 152, 50, 14);
+    drawRoundedRect(ctx, 76, 452, LOGICAL_WIDTH - 152, 48, 12);
     ctx.fill();
     ctx.strokeStyle = growthReady ? '#4ade80' : '#fbbf24';
     ctx.lineWidth = 2;
     ctx.stroke();
     ctx.fillStyle = growthReady ? '#bbf7d0' : '#fde047';
     ctx.font = '800 19px "PingFang SC", "Microsoft YaHei", sans-serif';
-    ctx.fillText(growthText, LOGICAL_WIDTH / 2, 481);
+    ctx.fillText(growthText, LOGICAL_WIDTH / 2, 476);
 
     if (!snap.resultClaimed) {
       drawButton(
@@ -2522,18 +2532,18 @@ export class Renderer {
         this.hitBoxes,
         'res_claim_ad',
         104,
-        528,
+        520,
         LOGICAL_WIDTH - 208,
-        90,
+        88,
         `看广告 ${mult}倍领取`,
         actions.onResultClaimAd,
         {
           fillTop: '#f59e0b',
           fillBottom: '#d97706',
           borderColor: '#fef08a',
-          fontSize: 30,
+          fontSize: 28,
           subText: `可领 ${snap.runCoins * mult} 金币`,
-          radius: 22,
+          radius: 16,
         },
       );
 
@@ -2542,22 +2552,24 @@ export class Renderer {
         this.hitBoxes,
         'res_claim_normal',
         136,
-        634,
+        626,
         LOGICAL_WIDTH - 272,
-        68,
+        60,
         `普通领取 ${snap.runCoins} 金币`,
         actions.onResultClaimNormal,
         {
-          fillTop: '#22c55e',
-          fillBottom: '#16a34a',
-          fontSize: 24,
-          radius: 18,
+          fillTop: '#334155',
+          fillBottom: '#1e293b',
+          borderColor: 'rgba(148, 163, 184, 0.4)',
+          textColor: '#e2e8f0',
+          fontSize: 22,
+          radius: 12,
         },
       );
     } else {
       ctx.fillStyle = '#4ade80';
       ctx.font = '900 28px "PingFang SC", "Microsoft YaHei", sans-serif';
-      ctx.fillText('本局奖励已入账', LOGICAL_WIDTH / 2, 610);
+      ctx.fillText('本局奖励已入账', LOGICAL_WIDTH / 2, 604);
     }
 
     drawButton(
@@ -2565,16 +2577,16 @@ export class Renderer {
       this.hitBoxes,
       'res_retry',
       104,
-      736,
+      708,
       244,
-      76,
+      68,
       snap.mode === 'endless' ? '再战无尽' : snap.isVictory ? '挑战下一关' : '再次挑战',
       actions.onRestartBattle,
       {
-        fillTop: '#38bdf8',
+        fillTop: '#0ea5e9',
         fillBottom: '#0284c7',
-        fontSize: 24,
-        radius: 18,
+        fontSize: 23,
+        radius: 16,
       },
     );
 
@@ -2583,16 +2595,17 @@ export class Renderer {
       this.hitBoxes,
       'res_menu',
       372,
-      736,
+      708,
       244,
-      76,
+      68,
       '返回主菜单',
       actions.onBackToMenu,
       {
-        fillTop: '#475569',
-        fillBottom: '#334155',
-        fontSize: 24,
-        radius: 18,
+        fillTop: '#334155',
+        fillBottom: '#1e293b',
+        borderColor: 'rgba(148, 163, 184, 0.3)',
+        fontSize: 23,
+        radius: 16,
       },
     );
 
@@ -2602,19 +2615,20 @@ export class Renderer {
         this.hitBoxes,
         'res_share_video',
         104,
-        834,
+        798,
         LOGICAL_WIDTH - 208,
-        76,
+        74,
         '发布高光视频',
         actions.onShareHighlightVideo,
         {
-          fillTop: '#ec4899',
-          fillBottom: '#be185d',
-          borderColor: '#fbcfe8',
-          fontSize: 24,
+          fillTop: '#1f1024',
+          fillBottom: '#0f172a',
+          borderColor: '#ec4899',
+          textColor: '#fbcfe8',
+          fontSize: 22,
           subText: snap.canClaimVideoReward ? '今日首发布奖励 150 金币' : '分享本局精彩瞬间',
-          subTextColor: '#fef08a',
-          radius: 18,
+          subTextColor: '#fde68a',
+          radius: 16,
         },
       );
     } else {
@@ -2623,19 +2637,20 @@ export class Renderer {
         this.hitBoxes,
         'res_share_score',
         104,
-        834,
+        798,
         LOGICAL_WIDTH - 208,
-        76,
+        74,
         '分享战绩给好友',
         actions.onShareScore,
         {
-          fillTop: '#10b981',
-          fillBottom: '#047857',
-          borderColor: '#a7f3d0',
-          fontSize: 24,
+          fillTop: '#0f172a',
+          fillBottom: '#0f172a',
+          borderColor: '#10b981',
+          textColor: '#a7f3d0',
+          fontSize: 22,
           subText: '邀请好友挑战更高波次',
-          subTextColor: '#fef08a',
-          radius: 18,
+          subTextColor: '#94a3b8',
+          radius: 16,
         },
       );
     }
@@ -2645,30 +2660,23 @@ export class Renderer {
         ctx,
         this.hitBoxes,
         'res_stuck_assist',
-        84,
-        924,
-        LOGICAL_WIDTH - 168,
-        84,
+        104,
+        894,
+        LOGICAL_WIDTH - 208,
+        80,
         '卡关助战：看广告借用满级传说武器 1 局',
         actions.onStartStuckAssist,
         {
-          fillTop: '#dc2626',
-          fillBottom: '#991b1b',
-          borderColor: '#fde047',
-          fontSize: 20,
+          fillTop: '#991b1b',
+          fillBottom: '#7f1d1d',
+          borderColor: 'rgba(253, 224, 71, 0.72)',
+          fontSize: 19,
           subText: '单局有效 · 满级传说火力与3名增援队友',
           subTextColor: '#fef08a',
-          radius: 20,
+          radius: 16,
         },
       );
     }
-
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.55)';
-    drawRoundedRect(ctx, 44, BANNER_ZONE_TOP + 12, LOGICAL_WIDTH - 88, 76, 16);
-    ctx.fill();
-    ctx.fillStyle = '#64748b';
-    ctx.font = '700 18px "PingFang SC", "Microsoft YaHei", sans-serif';
-    ctx.fillText('底部广告安全区 · 严禁误触区域', LOGICAL_WIDTH / 2, BANNER_ZONE_TOP + 50);
     ctx.restore();
   }
 
@@ -2692,11 +2700,11 @@ export class Renderer {
       const equipped = snap.save.equippedSkin === skin.id;
 
       ctx.fillStyle = equipped ? 'rgba(88, 28, 135, 0.55)' : 'rgba(15, 23, 42, 0.88)';
-      drawRoundedRect(ctx, 68, cardY, LOGICAL_WIDTH - 136, 152, 20);
+      drawRoundedRect(ctx, 68, cardY, LOGICAL_WIDTH - 136, 152, 16);
       ctx.fill();
       ctx.strokeStyle = equipped ? '#fde047' : skin.primaryColor;
       ctx.lineWidth = equipped ? 3 : 2;
-      drawRoundedRect(ctx, 68, cardY, LOGICAL_WIDTH - 136, 152, 20);
+      drawRoundedRect(ctx, 68, cardY, LOGICAL_WIDTH - 136, 152, 16);
       ctx.stroke();
 
       ctx.fillStyle = skin.primaryColor;
@@ -2747,7 +2755,7 @@ export class Renderer {
           fillTop: equipped ? '#475569' : unlocked ? '#22c55e' : '#f59e0b',
           fillBottom: equipped ? '#334155' : unlocked ? '#16a34a' : '#d97706',
           fontSize: 20,
-          radius: 16,
+          radius: 12,
           disabled: equipped,
         },
       );
@@ -2769,31 +2777,32 @@ export class Renderer {
         fillTop: '#475569',
         fillBottom: '#334155',
         fontSize: 24,
-        radius: 18,
+        radius: 16,
       },
     );
     ctx.restore();
   }
 
-  private renderToast(toast: ToastMessage, safeTop: number): void {
+  private renderToast(toast: ToastMessage, safeTop: number, inCombatHud = false): void {
     const ctx = this.ctx;
-    const y = Math.max(96, safeTop + 98);
+    const topBase = Math.max(22, safeTop) + 106;
+    const y = inCombatHud ? Math.max(topBase, this.lastHudBottomY + 8) : Math.max(96, safeTop + 98);
     ctx.save();
-    ctx.font = 'bold 22px "PingFang SC", "Microsoft YaHei", sans-serif';
-    const textW = Math.min(620, Math.max(260, ctx.measureText(toast.text).width + 64));
+    ctx.font = 'bold 20px "PingFang SC", "Microsoft YaHei", sans-serif';
+    const textW = Math.min(640, Math.max(260, ctx.measureText(toast.text).width + 56));
     const x = (LOGICAL_WIDTH - textW) / 2;
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
-    drawRoundedRect(ctx, x, y, textW, 56, 28);
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.94)';
+    drawRoundedRect(ctx, x, y, textW, 46, 23);
     ctx.fill();
     ctx.strokeStyle = toast.color;
-    ctx.lineWidth = 2.5;
-    drawRoundedRect(ctx, x, y, textW, 56, 28);
+    ctx.lineWidth = 2;
+    drawRoundedRect(ctx, x, y, textW, 46, 23);
     ctx.stroke();
 
     ctx.fillStyle = '#fef08a';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(toast.text, LOGICAL_WIDTH / 2, y + 28);
+    ctx.fillText(toast.text, LOGICAL_WIDTH / 2, y + 23, textW - 36);
     ctx.restore();
   }
 }
