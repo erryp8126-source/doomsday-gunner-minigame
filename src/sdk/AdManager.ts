@@ -193,6 +193,12 @@ export class AdManager {
     }
   }
 
+  public getPostRewardInterstitialCooldownMs(): number {
+    return this.sdk.getEffectiveAdPlatform() === 'douyin'
+      ? AD_RULES.douyinPostRewardInterstitialCooldownMs
+      : AD_RULES.postRewardInterstitialCooldownMs;
+  }
+
   public canShowInterstitial(
     totalRunsPlayed: number,
     nowMs = Date.now(),
@@ -200,11 +206,15 @@ export class AdManager {
     if (totalRunsPlayed <= AD_RULES.beginnerNoInterstitialRuns) {
       return { allowed: false, reason: '新手前两局免打扰保护' };
     }
-    if (
-      this.lastRewardedAtMs > 0 &&
-      nowMs - this.lastRewardedAtMs < AD_RULES.postRewardInterstitialCooldownMs
-    ) {
-      return { allowed: false, reason: '激励视频后三十秒免打扰' };
+    const postRewardCooldownMs = this.getPostRewardInterstitialCooldownMs();
+    if (this.lastRewardedAtMs > 0 && nowMs - this.lastRewardedAtMs < postRewardCooldownMs) {
+      return {
+        allowed: false,
+        reason:
+          postRewardCooldownMs >= 60_000
+            ? '激励视频后六十秒免打扰'
+            : '激励视频后三十秒免打扰',
+      };
     }
     if (
       this.lastInterstitialAtMs > 0 &&
@@ -260,9 +270,10 @@ export class AdManager {
       this.lastInterstitialAtMs > 0
         ? Math.max(0, Math.ceil((AD_RULES.interstitialCooldownMs - (nowMs - this.lastInterstitialAtMs)) / 1000))
         : 0;
+    const postRewardCooldownMs = this.getPostRewardInterstitialCooldownMs();
     const postRewardLeft =
       this.lastRewardedAtMs > 0
-        ? Math.max(0, Math.ceil((AD_RULES.postRewardInterstitialCooldownMs - (nowMs - this.lastRewardedAtMs)) / 1000))
+        ? Math.max(0, Math.ceil((postRewardCooldownMs - (nowMs - this.lastRewardedAtMs)) / 1000))
         : 0;
 
     const totalImpressions =

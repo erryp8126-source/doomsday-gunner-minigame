@@ -25,6 +25,9 @@ jobs:
       - name: 运行零依赖逻辑单测
         run: npm test
 
+      - name: Web 端生产构建校验
+        run: npm run build
+
       - name: 双端小游戏构建（微信 wx + 抖音 tt）
         run: npm run build:minigame
 

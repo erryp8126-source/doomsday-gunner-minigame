@@ -17,9 +17,10 @@ function createAdHarness(options = {}) {
     message: '奖励已发放',
   };
 
+  const platform = options.platform ?? 'wechat';
   const fakeSdk = {
-    runtime: 'wechat',
-    getEffectiveAdPlatform: () => 'wechat',
+    runtime: platform,
+    getEffectiveAdPlatform: () => platform,
     showRewardedVideoRaw: (scene) => {
       rewardedRawCalls += 1;
       if (options.deferRewarded) {
@@ -312,5 +313,38 @@ test('PlatformSDK 真机插屏必须等待 onClose 才解除暂停并允许下�
   } finally {
     globalThis.wx = origWx;
     globalThis.tt = origTt;
+  }
+});
+
+test('AdManager 抖音端激励视频后 60 秒插屏保护冷却', async () => {
+  const origDateNow = Date.now;
+  let nowMs = 2_000_000;
+  Date.now = () => nowMs;
+
+  try {
+    const h = createAdHarness({ platform: 'douyin' });
+    assert.equal(h.adManager.getPostRewardInterstitialCooldownMs(), 60_000);
+
+    const rewOk = await h.adManager.showRewardedVideo('pre_battle_boost', '加特林开局');
+    assert.equal(rewOk, true);
+
+    // 30 秒时微信端已放行，但抖音端必须继续拦截至满 60 秒
+    nowMs += 30_000;
+    const at30s = h.adManager.canShowInterstitial(3, nowMs);
+    assert.equal(at30s.allowed, false);
+    assert.equal(at30s.reason, '激励视频后六十秒免打扰');
+    assert.equal(await h.adManager.tryShowInterstitial('30秒触发', 3, nowMs), false);
+    assert.equal(h.getInterstitialRawCalls(), 0);
+
+    nowMs += 29_999; // 累计 59.999 秒
+    assert.equal(h.adManager.canShowInterstitial(3, nowMs).allowed, false);
+    assert.equal(h.adManager.getDebugSnapshot(nowMs).postRewardCooldownLeftSec, 1);
+
+    nowMs += 1; // 满 60 秒后放行
+    assert.equal(h.adManager.canShowInterstitial(3, nowMs).allowed, true);
+    assert.equal(await h.adManager.tryShowInterstitial('60秒放行', 3, nowMs), true);
+    assert.equal(h.getInterstitialRawCalls(), 1);
+  } finally {
+    Date.now = origDateNow;
   }
 });

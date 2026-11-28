@@ -5,7 +5,9 @@ import {
   type RewardedScene,
   type TargetPlatform,
 } from '../config/adConfig';
+import { computeStageLayout } from '../game/stageLayout';
 import { LOGICAL_HEIGHT, LOGICAL_WIDTH } from '../game/types';
+import { AdShowSession } from './AdShowSession';
 
 export type SoundEffectName =
   | 'pistol'
@@ -131,12 +133,12 @@ export class PlatformSDK {
 
   private wxRewardedAd: MinigameRewardedVideoAd | null = null;
   private ttRewardedAd: MinigameRewardedVideoAd | null = null;
-  private pendingRewardResolve: ((res: RewardedAdResult) => void) | null = null;
-  private activeRewardScene: RewardedScene | null = null;
+  private readonly rewardedSession = new AdShowSession<RewardedAdResult>();
+  private activeRewardScene: RewardedScene = 'revive_clear';
 
   private bannerAd: MinigameBannerAd | null = null;
   private interstitialAd: MinigameInterstitialAd | null = null;
-  private pendingInterstitialResolve: ((res: InterstitialAdResult) => void) | null = null;
+  private readonly interstitialSession = new AdShowSession<InterstitialAdResult>();
 
   private ttRecorder: DouyinGameRecorderManager | null = null;
   private recordingActive = false;
@@ -268,18 +270,18 @@ export class PlatformSDK {
         tt.checkScene({
           scene: 'sidebar',
           success: (res: { isExist?: boolean } | undefined) => {
-            this.sidebarSupported = Boolean(res?.isExist ?? true);
+            this.sidebarSupported = res?.isExist === true;
           },
           fail: () => {
             this.sidebarSupported = false;
           },
         });
       }
+      // 每次进入都用最新启动参数覆盖。不同宿主（抖音、极速版等）都可能进入，故不比对 scene 数值
       const checkLaunch = (opt?: MinigameLaunchOptions) => {
         if (!opt) return;
-        if (opt.launch_from === 'homepage' || opt.location === 'sidebar_card') {
-          this.launchedFromSidebar = true;
-        }
+        this.launchedFromSidebar =
+          opt.launch_from === 'homepage' && opt.location === 'sidebar_card';
       };
       if (typeof tt.getLaunchOptionsSync === 'function') {
         checkLaunch(tt.getLaunchOptionsSync());
@@ -335,13 +337,18 @@ export class PlatformSDK {
   /** 获取当前逻辑视口顶部/底部安全区内边距（映射至 720×1280 坐标系，复用缓存对象避免 GC） */
   public getLogicalSafeInsets(): { top: number; bottom: number } {
     const vp = this.viewport;
-    const scaleY = LOGICAL_HEIGHT / Math.max(1, vp.height);
     if (this.runtime === 'web' && import.meta.env.VITE_TARGET === 'web') {
+      const scaleY = LOGICAL_HEIGHT / Math.max(1, vp.height);
       this.safeInsetsCache.top = this.webBridge?.isSimulatedCapsuleEnabled?.() ? 124 : 22;
+      this.safeInsetsCache.bottom = Math.round(vp.safeAreaBottom * scaleY);
     } else {
+      const stage = computeStageLayout(vp.width, vp.height);
       this.safeInsetsCache.top = vp.safeTopLogical;
+      this.safeInsetsCache.bottom = Math.max(
+        0,
+        Math.round((vp.safeAreaBottom - stage.offsetY) / stage.scale),
+      );
     }
-    this.safeInsetsCache.bottom = Math.round(vp.safeAreaBottom * scaleY);
     return this.safeInsetsCache;
   }
 
@@ -350,8 +357,7 @@ export class PlatformSDK {
     info: MinigameSystemInfo,
     safeTopPxFallback: number,
   ): number {
-    const winH = Math.max(1, info?.windowHeight || 844);
-    const scaleY = LOGICAL_HEIGHT / winH;
+    const stage = computeStageLayout(info?.windowWidth || 390, info?.windowHeight || 844);
     let menuBottomPx = 0;
     try {
       const menuRect =
@@ -367,7 +373,8 @@ export class PlatformSDK {
     const statusBase =
       typeof info?.statusBarHeight === 'number' ? info.statusBarHeight : safeTopPxFallback;
     const safeTopPx = menuBottomPx > 0 ? menuBottomPx + 8 : statusBase + 52;
-    return Math.min(220, Math.round(Math.max(22, safeTopPx * scaleY)));
+    const safeTopLogical = (safeTopPx - stage.offsetY) / stage.scale;
+    return Math.min(220, Math.round(Math.max(22, safeTopLogical)));
   }
 
   private queryViewport(): ViewportInfo {
@@ -381,7 +388,8 @@ export class PlatformSDK {
       return {
         width: winW,
         height: winH,
-        pixelRatio: Math.min(info.pixelRatio || 1, MAX_PIXEL_RATIO),
+        // 保留设备原始像素比，渲染分辨率上限由画布布局统一控制
+        pixelRatio: info.pixelRatio || 1,
         safeAreaTop: safeTopPx,
         safeAreaBottom: Math.max(0, winH - (safe.bottom || winH)),
         safeTopLogical: this.computeCapsuleSafeTopLogical(wx, info, safeTopPx),
@@ -397,7 +405,8 @@ export class PlatformSDK {
       return {
         width: winW,
         height: winH,
-        pixelRatio: Math.min(info.pixelRatio || 1, MAX_PIXEL_RATIO),
+        // 保留设备原始像素比，渲染分辨率上限由画布布局统一控制
+        pixelRatio: info.pixelRatio || 1,
         safeAreaTop: safeTopPx,
         safeAreaBottom: Math.max(0, winH - (safe.bottom || winH)),
         safeTopLogical: this.computeCapsuleSafeTopLogical(tt, info, safeTopPx),
@@ -455,10 +464,10 @@ export class PlatformSDK {
       const y = ((clientY - rect.top) / Math.max(1, rect.height)) * LOGICAL_HEIGHT;
       return { x, y };
     }
-    const vp = this.viewport;
+    const stage = computeStageLayout(this.viewport.width, this.viewport.height);
     return {
-      x: (clientX / Math.max(1, vp.width)) * LOGICAL_WIDTH,
-      y: (clientY / Math.max(1, vp.height)) * LOGICAL_HEIGHT,
+      x: (clientX - stage.offsetX) / stage.scale,
+      y: (clientY - stage.offsetY) / stage.scale,
     };
   }
 
@@ -967,36 +976,17 @@ export class PlatformSDK {
     }
     this.wxRewardedAd = wx.createRewardedVideoAd({ adUnitId });
     this.wxRewardedAd.onClose((res: { isEnded?: boolean } | undefined) => {
-      const resolver = this.pendingRewardResolve;
-      const scene = this.activeRewardScene || 'revive_clear';
-      this.pendingRewardResolve = null;
-      this.activeRewardScene = null;
-      if (!resolver) return;
-
       // 微信基础库：res 存在时严格要求 res.isEnded === true，部分旧版本无 res 传参视为已完播
       const completed = res ? res.isEnded === true : true;
-      resolver({
+      this.rewardedSession.settle({
         rewarded: completed,
         reason: completed ? 'completed' : 'abandoned',
-        scene,
+        scene: this.activeRewardScene,
         message: completed ? '奖励已发放' : '完整观看广告才能领取奖励',
       });
     });
 
-    this.wxRewardedAd.onError(() => {
-      const resolver = this.pendingRewardResolve;
-      const scene = this.activeRewardScene || 'revive_clear';
-      this.pendingRewardResolve = null;
-      this.activeRewardScene = null;
-      if (resolver) {
-        resolver({
-          rewarded: false,
-          reason: 'load_failed',
-          scene,
-          message: '暂无可用广告，请稍后再试',
-        });
-      }
-    });
+    this.wxRewardedAd.onError(() => this.rewardedSession.fail());
   }
 
   private initDouyinRewardedAd(): void {
@@ -1014,35 +1004,16 @@ export class PlatformSDK {
         })
       : tt.createRewardedVideoAd({ adUnitId });
     this.ttRewardedAd.onClose((res: { isEnded?: boolean; count?: number } | undefined) => {
-      const resolver = this.pendingRewardResolve;
-      const scene = this.activeRewardScene || 'revive_clear';
-      this.pendingRewardResolve = null;
-      this.activeRewardScene = null;
-      if (!resolver) return;
-
       const completed = Boolean(res?.isEnded);
-      resolver({
+      this.rewardedSession.settle({
         rewarded: completed,
         reason: completed ? 'completed' : 'abandoned',
-        scene,
+        scene: this.activeRewardScene,
         message: completed ? '奖励已发放' : '完整观看广告才能领取奖励',
       });
     });
 
-    this.ttRewardedAd.onError(() => {
-      const resolver = this.pendingRewardResolve;
-      const scene = this.activeRewardScene || 'revive_clear';
-      this.pendingRewardResolve = null;
-      this.activeRewardScene = null;
-      if (resolver) {
-        resolver({
-          rewarded: false,
-          reason: 'load_failed',
-          scene,
-          message: '暂无可用广告，请稍后再试',
-        });
-      }
-    });
+    this.ttRewardedAd.onError(() => this.rewardedSession.fail());
   }
 
   public showRewardedVideoRaw(scene: RewardedScene, rewardLabel: string): Promise<RewardedAdResult> {
@@ -1060,7 +1031,7 @@ export class PlatformSDK {
       });
     }
 
-    if (this.pendingRewardResolve) {
+    if (this.rewardedSession.busy) {
       return Promise.resolve({
         rewarded: false,
         reason: 'load_failed',
@@ -1069,27 +1040,16 @@ export class PlatformSDK {
       });
     }
 
-    return new Promise((resolve) => {
-      this.pendingRewardResolve = resolve;
-      this.activeRewardScene = scene;
-
-      rewardedAd
-        .show()
-        .catch(() => rewardedAd.load().then(() => rewardedAd.show()))
-        .catch(() => {
-          if (this.pendingRewardResolve) {
-            const cb = this.pendingRewardResolve;
-            this.pendingRewardResolve = null;
-            this.activeRewardScene = null;
-            cb({
-              rewarded: false,
-              reason: 'load_failed',
-              scene,
-              message: '暂无可用广告，请稍后再试',
-            });
-          }
-        });
-    });
+    this.activeRewardScene = scene;
+    return this.rewardedSession.run(
+      (isAlive) =>
+        rewardedAd.show().catch(async () => {
+          if (!isAlive()) return;
+          await rewardedAd.load();
+          if (isAlive()) await rewardedAd.show();
+        }),
+      { rewarded: false, reason: 'load_failed', scene, message: '暂无可用广告，请稍后再试' },
+    );
   }
 
   public showBannerRaw(): void {
@@ -1160,12 +1120,27 @@ export class PlatformSDK {
     this.bannerAd?.hide?.();
   }
 
-  private resolvePendingInterstitial(res: InterstitialAdResult): void {
-    const resolver = this.pendingInterstitialResolve;
-    this.pendingInterstitialResolve = null;
-    if (resolver) {
-      resolver(res);
+  private bindInterstitialEvents(ad: MinigameInterstitialAd): void {
+    ad.onClose?.(() => {
+      this.interstitialSession.settle({ shown: true, reason: 'shown' });
+    });
+    ad.onError(() => this.interstitialSession.fail());
+  }
+
+  /** 支持 onClose 的基础库等关闭后才返回；旧版本只能在 show() 成功后返回 */
+  private runInterstitial(
+    ad: MinigameInterstitialAd,
+    attempt: (isAlive: () => boolean) => Promise<unknown>,
+  ): Promise<InterstitialAdResult> {
+    const failed: InterstitialAdResult = { shown: false, reason: 'load_failed' };
+    const shown: InterstitialAdResult = { shown: true, reason: 'shown' };
+    if (typeof ad.onClose === 'function') {
+      return this.interstitialSession.run(attempt, failed, shown);
     }
+    return attempt(() => true).then(
+      () => shown,
+      () => failed,
+    );
   }
 
   public showInterstitialRaw(sceneLabel: string): Promise<InterstitialAdResult> {
@@ -1173,7 +1148,7 @@ export class PlatformSDK {
       return this.webBridge.showInterstitial(sceneLabel);
     }
 
-    if (this.pendingInterstitialResolve) {
+    if (this.interstitialSession.busy) {
       return Promise.resolve({ shown: false, reason: 'load_failed' });
     }
 
@@ -1185,33 +1160,20 @@ export class PlatformSDK {
       if (!this.interstitialAd) {
         try {
           this.interstitialAd = wx.createInterstitialAd({ adUnitId });
-          this.interstitialAd.onClose?.(() => {
-            this.resolvePendingInterstitial({ shown: true, reason: 'shown' });
-          });
-          this.interstitialAd.onError(() => {
-            this.resolvePendingInterstitial({ shown: false, reason: 'load_failed' });
-          });
+          this.bindInterstitialEvents(this.interstitialAd);
         } catch {
           this.interstitialAd = null;
           return Promise.resolve({ shown: false, reason: 'load_failed' });
         }
       }
       const ad = this.interstitialAd;
-      if (typeof ad.onClose === 'function') {
-        return new Promise<InterstitialAdResult>((resolve) => {
-          this.pendingInterstitialResolve = resolve;
-          ad.show()
-            .catch(() => ad.load().then(() => ad.show()))
-            .catch(() => {
-              this.resolvePendingInterstitial({ shown: false, reason: 'load_failed' });
-            });
-        });
-      }
-      return ad
-        .show()
-        .catch(() => ad.load().then(() => ad.show()))
-        .then(() => ({ shown: true, reason: 'shown' as const }))
-        .catch(() => ({ shown: false, reason: 'load_failed' as const }));
+      return this.runInterstitial(ad, (isAlive) =>
+        ad.show().catch(async () => {
+          if (!isAlive()) return;
+          await ad.load();
+          if (isAlive()) await ad.show();
+        }),
+      );
     }
 
     if (this.runtime === 'douyin') {
@@ -1222,33 +1184,17 @@ export class PlatformSDK {
       if (!this.interstitialAd) {
         try {
           this.interstitialAd = tt.createInterstitialAd({ adUnitId });
-          this.interstitialAd.onClose?.(() => {
-            this.resolvePendingInterstitial({ shown: true, reason: 'shown' });
-          });
-          this.interstitialAd.onError(() => {
-            this.resolvePendingInterstitial({ shown: false, reason: 'load_failed' });
-          });
+          this.bindInterstitialEvents(this.interstitialAd);
         } catch {
           this.interstitialAd = null;
           return Promise.resolve({ shown: false, reason: 'load_failed' });
         }
       }
       const ad = this.interstitialAd;
-      if (typeof ad.onClose === 'function') {
-        return new Promise<InterstitialAdResult>((resolve) => {
-          this.pendingInterstitialResolve = resolve;
-          ad.load()
-            .then(() => ad.show())
-            .catch(() => {
-              this.resolvePendingInterstitial({ shown: false, reason: 'load_failed' });
-            });
-        });
-      }
-      return ad
-        .load()
-        .then(() => ad.show())
-        .then(() => ({ shown: true, reason: 'shown' as const }))
-        .catch(() => ({ shown: false, reason: 'load_failed' as const }));
+      return this.runInterstitial(ad, async (isAlive) => {
+        await ad.load();
+        if (isAlive()) await ad.show();
+      });
     }
 
     return Promise.resolve({ shown: false, reason: 'unsupported' });

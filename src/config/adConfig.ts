@@ -57,8 +57,9 @@ export const AD_RULES = {
   beginnerNoInterstitialRuns: 2,
   /** 两次插屏最小间隔（毫秒） */
   interstitialCooldownMs: 60_000,
-  /** 看完激励视频后 N 毫秒内不叠加弹插屏 */
+  /** 看完激励视频后 N 毫秒内不叠加弹插屏（微信 30 秒，抖音 60 秒） */
   postRewardInterstitialCooldownMs: 30_000,
+  douyinPostRewardInterstitialCooldownMs: 60_000,
   /** 单局战败复活上限 */
   maxRevivesPerRun: 1,
   /** 开局神装体验倒计时（秒） */

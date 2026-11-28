@@ -12,6 +12,7 @@ import { AssetLoader } from './AssetLoader';
 import { ObjectPool } from './ObjectPool';
 import { Renderer, type RenderActions, type RenderSnapshot } from './Renderer';
 import { SaveManager } from './SaveManager';
+import { computeScreenLayout, computeStageLayout } from './stageLayout';
 import {
   LOGICAL_HEIGHT,
   LOGICAL_WIDTH,
@@ -87,6 +88,33 @@ export interface PerfMetrics {
 
 export const MAX_VISIBLE_TROOPERS = 16;
 export const MAX_BULLET_POOL = 320;
+export const MAX_SAFE_BULLETS_PER_SEC = 260;
+export const MAX_SAFE_VOLLEYS_PER_SEC = 60;
+
+export interface FiringPacing {
+  effectiveFireRate: number;
+  interval: number;
+  dpsCompMult: number;
+}
+
+/**
+ * 计算当前齐射频率与满配溢出无损伤倍折算（零分配复用 out 结构体，防 320 发子弹池 FIFO 覆盖导致秒伤归零）
+ */
+export function computeFiringPacing(
+  rawFireRate: number,
+  bulletsPerVolley: number,
+  out?: FiringPacing,
+): FiringPacing {
+  const safeRawRate = Math.max(0.1, rawFireRate);
+  const safePerVolley = Math.max(1, bulletsPerVolley);
+  const capByPool = MAX_SAFE_BULLETS_PER_SEC / safePerVolley;
+  const effectiveFireRate = Math.min(safeRawRate, capByPool, MAX_SAFE_VOLLEYS_PER_SEC);
+  const target = out ?? { effectiveFireRate: 1, interval: 1, dpsCompMult: 1 };
+  target.effectiveFireRate = effectiveFireRate;
+  target.interval = 1 / effectiveFireRate;
+  target.dpsCompMult = safeRawRate / effectiveFireRate;
+  return target;
+}
 
 export function createTrooperBuffer(): TrooperPoint[] {
   const buf: TrooperPoint[] = [];
@@ -275,6 +303,8 @@ export class GameEngine {
   private unbindFns: Array<() => void> = [];
   private currentDpr = 1.5;
   private canvasScale = 1.5;
+  private canvasOffsetX = 0;
+  private canvasOffsetY = 0;
   private readonly fireTrooperBuf = createTrooperBuffer();
   private perfWindowStartMs = 0;
   private perfFrameCount = 0;
@@ -353,6 +383,12 @@ export class GameEngine {
     claimed: false,
     timer: 0,
     duration: 8.0,
+  };
+
+  private readonly firingPacing: FiringPacing = {
+    effectiveFireRate: 1,
+    interval: 1,
+    dpsCompMult: 1,
   };
 
   private readonly bulletPool = new ObjectPool<Bullet>(
@@ -491,6 +527,8 @@ export class GameEngine {
 
     this.renderSnapshot = {
       renderScale: this.canvasScale,
+      renderOffsetX: this.canvasOffsetX,
+      renderOffsetY: this.canvasOffsetY,
       mode: this.mode,
       endlessWave: this.endlessWave,
       totalSurviveSec: this.totalSurviveSec,
@@ -677,6 +715,8 @@ export class GameEngine {
         try {
           const expectedState = this.state;
           const epoch = this.sessionEpoch;
+          const preserveStuckAssist =
+            expectedState === 'PAUSED' && this.mode === 'campaign' && this.stuckAssistActive;
           if (this.state === 'PAUSED') {
             this.sdk.resumeAudio();
             this.sdk.stopBattleRecording();
@@ -690,7 +730,7 @@ export class GameEngine {
           if (this.state !== expectedState || this.sessionEpoch !== epoch) {
             return;
           }
-          this.startGame(this.mode, false);
+          this.startGame(this.mode, false, preserveStuckAssist);
         } finally {
           this.navTransitionBusy = false;
         }
@@ -991,12 +1031,40 @@ export class GameEngine {
     const vp = this.sdk.getViewport();
     const canvas = this.sdk.getCanvas();
     const clampedDpr = Math.min(vp.pixelRatio || 1, 1.5);
-    this.currentDpr = clampedDpr;
-    canvas.width = Math.round(LOGICAL_WIDTH * clampedDpr);
-    canvas.height = Math.round(LOGICAL_HEIGHT * clampedDpr);
-    const scale = canvas.width / LOGICAL_WIDTH;
-    this.canvasScale = scale;
-    this.ctx.setTransform(scale, 0, 0, scale, 0, 0);
+    // 小游戏上屏画布铺满全屏，需按屏幕比例建缓冲再等比居中；浏览器端画布本身锁定 9:16
+    const isMinigame = this.sdk.runtime === 'wechat' || this.sdk.runtime === 'douyin';
+    const stage =
+      isMinigame && vp.width > 0 && vp.height > 0
+        ? computeScreenLayout(vp.width, vp.height, vp.pixelRatio)
+        : computeStageLayout(LOGICAL_WIDTH, LOGICAL_HEIGHT, clampedDpr);
+    canvas.width = stage.canvasWidth;
+    canvas.height = stage.canvasHeight;
+    this.currentDpr = isMinigame ? stage.scale : clampedDpr;
+    this.canvasScale = stage.scale;
+    this.canvasOffsetX = stage.offsetX;
+    this.canvasOffsetY = stage.offsetY;
+    this.ctx.setTransform(stage.scale, 0, 0, stage.scale, stage.offsetX, stage.offsetY);
+  }
+
+  /** 覆盖舞台以外的留边，遮掉震屏和屏外实体的越界绘制 */
+  private paintLetterbox(): void {
+    const { ctx, canvasOffsetX: ox, canvasOffsetY: oy } = this;
+    if (ox < 0.5 && oy < 0.5) return;
+    const { width, height } = this.sdk.getCanvas();
+    const right = Math.floor(ox + LOGICAL_WIDTH * this.canvasScale);
+    const bottom = Math.floor(oy + LOGICAL_HEIGHT * this.canvasScale);
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = '#0b0f19';
+    if (oy >= 0.5) {
+      ctx.fillRect(0, 0, width, Math.ceil(oy));
+      ctx.fillRect(0, bottom, width, height - bottom);
+    }
+    if (ox >= 0.5) {
+      ctx.fillRect(0, 0, Math.ceil(ox), height);
+      ctx.fillRect(right, 0, width - right, height);
+    }
+    ctx.restore();
   }
 
   public showToast(text: string, color = '#fbbf24', duration = 2.1): void {
@@ -1038,7 +1106,7 @@ export class GameEngine {
     this.bossFireballPool.releaseAll();
   }
 
-  private startGame(mode: GameMode, withSuperStart: boolean): void {
+  private startGame(mode: GameMode, withSuperStart: boolean, preserveStuckAssist = false): void {
     this.mode = mode;
     this.endlessWave = 1;
     this.totalSurviveSec = 0;
@@ -1059,7 +1127,8 @@ export class GameEngine {
     const skin = getSkinDef(this.saveManager.getData().equippedSkin);
     const baseSquad = this.saveManager.getInitialSquadSize() + skin.startSquadBonus;
     const assistActive =
-      mode === 'campaign' && this.saveManager.consumeStuckAssist(this.currentLevel.id);
+      mode === 'campaign' &&
+      (preserveStuckAssist || this.saveManager.consumeStuckAssist(this.currentLevel.id));
     this.stuckAssistActive = assistActive;
     const assistSquad = assistActive ? 3 : 0;
 
@@ -1312,10 +1381,23 @@ export class GameEngine {
       (this.doubleFireTimer > 0 ? 1.65 : 1);
 
     const w = WEAPONS[this.weaponId];
+    const shooters = Math.min(this.squadCount, 8);
+    const bulletsPerVolley = Math.max(1, shooters * w.pellets);
+    const pacing = computeFiringPacing(
+      w.fireRate * totalRateMult,
+      bulletsPerVolley,
+      this.firingPacing,
+    );
+
     this.fireCd -= dt;
-    if (this.fireCd <= 0) {
-      this.fireSquad();
-      this.fireCd = 1 / (w.fireRate * totalRateMult);
+    let shotsThisFrame = 0;
+    while (this.fireCd <= 0 && shotsThisFrame < 2) {
+      this.fireSquad(pacing.dpsCompMult);
+      this.fireCd += pacing.interval;
+      shotsThisFrame += 1;
+    }
+    if (this.fireCd < 0) {
+      this.fireCd = 0;
     }
 
     // 局内超级空投（尸王登场前 10 秒出现 8 秒非强制右侧呼吸入口，绝不强行弹窗打断）
@@ -1410,13 +1492,14 @@ export class GameEngine {
     this.updateBossFireballs(dt);
   }
 
-  private fireSquad(): void {
+  private fireSquad(dpsCompMult = 1): void {
     const w = WEAPONS[this.weaponId];
     const skin = getSkinDef(this.saveManager.getData().equippedSkin);
     const shooters = Math.min(this.squadCount, 8);
     const overflowMult = this.squadCount > 8 ? 1 + (this.squadCount - 8) * 0.08 : 1;
     const totalDmgMult =
       overflowMult *
+      dpsCompMult *
       (1 + this.overflowAttackBonus) *
       (this.stuckAssistActive ? 1.6 : 1) *
       this.saveManager.getAttackMultiplier() *
@@ -2684,6 +2767,8 @@ export class GameEngine {
     }
 
     snap.renderScale = this.canvasScale;
+    snap.renderOffsetX = this.canvasOffsetX;
+    snap.renderOffsetY = this.canvasOffsetY;
     snap.mode = this.mode;
     snap.endlessWave = this.endlessWave;
     snap.totalSurviveSec = this.totalSurviveSec;
@@ -2761,5 +2846,6 @@ export class GameEngine {
     snap.upgradeGap = this.upgradeGapCache;
 
     this.renderer.render(snap, this.renderActions);
+    this.paintLetterbox();
   }
 }

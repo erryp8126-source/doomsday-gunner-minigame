@@ -228,7 +228,7 @@ export function mountWebAdOverlay(
       <div class="iaa-row"><span>Banner 状态</span><span class="${snap.bannerVisible ? 'iaa-stat-good' : 'iaa-stat-warn'}">${snap.bannerVisible ? '安全区展示中' : '战斗隐藏中'}</span></div>
       <div class="iaa-row"><span>新手免插屏剩余</span><span class="iaa-stat-val">${snap.beginnerProtectionLeft} 局 (已玩 ${snap.totalRunsPlayed} 局)</span></div>
       <div class="iaa-row"><span>插屏 60s 冷却</span><span class="iaa-stat-warn">${snap.interstitialCooldownLeftSec} 秒</span></div>
-      <div class="iaa-row"><span>激励后 30s 保护</span><span class="iaa-stat-warn">${snap.postRewardCooldownLeftSec} 秒</span></div>
+      <div class="iaa-row"><span>激励后 ${isDouyin ? 60 : 30}s 保护</span><span class="iaa-stat-warn">${snap.postRewardCooldownLeftSec} 秒</span></div>
       <div class="iaa-row"><span>最近频控状态</span><span>${snap.lastBlockReason}</span></div>
     `;
 
@@ -341,7 +341,7 @@ export function mountWebAdOverlay(
       platformPill.textContent = isDouyin ? '抖音局间插屏广告' : '微信局间插屏广告';
       countdownPill.textContent = '插屏频控已放行';
       adTitle.textContent = `局间插屏展示（${sceneLabel}）`;
-      adDesc.textContent = '已满足新手前2局免弹、60秒冷却及激励后30秒保护规则。';
+      adDesc.textContent = `已满足新手前2局免弹、60秒冷却及激励后${isDouyin ? 60 : 30}秒保护规则。`;
       progressFill.style.width = '100%';
       btnClose.style.display = 'none';
       btnFinish.disabled = false;

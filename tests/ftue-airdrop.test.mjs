@@ -859,3 +859,208 @@ test('H5/M1/M4/M5/M6/M7: 子弹池扩容320、录屏生命周期、广告中不�
     assert.ok(imgCall.y + imgCall.h <= 520, `主菜单 Boss 高度不得越界压盖下方战绩栏 (${imgCall.y + imgCall.h})`);
   }
 });
+
+test('射速余数累加：60fps/30fps 下加特林 2 级严格快于 1 级且单帧最多补射 2 次', () => {
+  const measureShots = (fireRateLevel, fps, totalSec) => {
+    let shots = 0;
+    const { engine } = createEngineHarness((sm) => {
+      sm.getData().fireRateLevel = fireRateLevel;
+    });
+    engine.sdk.playSound = (name) => {
+      if (name === 'gatling') shots += 1;
+    };
+    engine.startGame('campaign', false);
+    engine.weaponId = 'gatling';
+    engine.squadCount = 1;
+    const steps = Math.round(totalSec * fps);
+    const dt = 1 / fps;
+    for (let i = 0; i < steps; i++) {
+      engine.zombieTimer = 999;
+      engine.barrelTimer = 999;
+      engine.gateTimer = 999;
+      engine.update(dt);
+    }
+    return shots;
+  };
+
+  const lv1Shots60 = measureShots(1, 60, 10);
+  const lv2Shots60 = measureShots(2, 60, 10);
+  assert.ok(
+    lv2Shots60 > lv1Shots60,
+    `60fps 下 2 级加特林射速应严格高于 1 级（lv1=${lv1Shots60}, lv2=${lv2Shots60}）`,
+  );
+
+  const lv1Shots30 = measureShots(1, 30, 10);
+  const lv2Shots30 = measureShots(2, 30, 10);
+  assert.ok(
+    lv2Shots30 > lv1Shots30,
+    `30fps 下 2 级加特林射速应严格高于 1 级（lv1=${lv1Shots30}, lv2=${lv2Shots30}）`,
+  );
+
+  // 单帧大 dt（0.3s）补射次数严格封顶 2 次，不会一次性倾泻超量齐射
+  let spikeShots = 0;
+  const { engine: spikeEngine } = createEngineHarness((sm) => {
+    sm.getData().fireRateLevel = 20;
+  });
+  spikeEngine.sdk.playSound = (name) => {
+    if (name === 'gatling') spikeShots += 1;
+  };
+  spikeEngine.startGame('campaign', false);
+  spikeEngine.weaponId = 'gatling';
+  spikeEngine.fireCd = 0.01;
+  spikeEngine.update(0.3);
+  assert.equal(spikeShots, 2);
+});
+
+test('满配霰弹 + 20级射速 + 2.6x加成 + 空投双倍：DPS 不归零且在飞子弹不溢出 320 子弹池', () => {
+  const { engine } = createEngineHarness((sm) => {
+    const d = sm.getData();
+    d.attackLevel = 20;
+    d.fireRateLevel = 20;
+    d.equippedSkin = 'pulse';
+  });
+  engine.startGame('campaign', false);
+  engine.weaponId = 'shotgun';
+  engine.squadCount = 36;
+  engine.fireRateBonus = 2.6;
+  engine.doubleFireTimer = 15;
+  engine.combo = 50;
+
+  // 1) 空场最坏情况（无怪阻挡、子弹飞满整条赛道）：检验峰值在飞子弹严格低于 320
+  let peakBulletsEmpty = 0;
+  for (let i = 0; i < 120; i++) {
+    engine.zombieTimer = 999;
+    engine.barrelTimer = 999;
+    engine.gateTimer = 999;
+    engine.comboTimer = 2.7;
+    engine.doubleFireTimer = 15;
+    engine.update(1 / 60);
+    if (engine.bulletPool.activeCount > peakBulletsEmpty) {
+      peakBulletsEmpty = engine.bulletPool.activeCount;
+    }
+  }
+  assert.ok(
+    peakBulletsEmpty > 0 && peakBulletsEmpty < 320,
+    `空场满配霰弹峰值子弹(${peakBulletsEmpty})应小于池上限 320`,
+  );
+
+  // 2) 前方放置超大血量靶子：确认折算后 DPS 稳定命中且无损输出
+  const target = engine.zombiePool.acquire();
+  target.x = 360;
+  target.y = 360;
+  target.hp = 5_000_000;
+  target.maxHp = 5_000_000;
+  target.speed = 0;
+  target.radius = 220;
+  target.kind = 'normal';
+  target.isBoss = false;
+  target.dying = false;
+
+  let hpAt1s = 0;
+  for (let i = 0; i < 120; i++) {
+    engine.zombieTimer = 999;
+    engine.barrelTimer = 999;
+    engine.gateTimer = 999;
+    engine.comboTimer = 2.7;
+    engine.doubleFireTimer = 15;
+    target.y = 360;
+    engine.update(1 / 60);
+    if (i === 59) hpAt1s = target.hp;
+  }
+  const secondWindowDamage = hpAt1s - target.hp;
+  assert.ok(
+    secondWindowDamage > 150_000,
+    `满配霰弹稳定阶段每秒有效伤害应完整折算输出（实测=${secondWindowDamage}）`,
+  );
+});
+
+test('暂停重开未结算局保留卡关助战，以及非 9:16 偏移下 Renderer 所有 setTransform 带 ox/oy', async () => {
+  const { engine, getCapturedSnap } = createEngineHarness((sm) => {
+    sm.markLevelCleared(1, 15);
+    sm.selectLevel(2);
+    sm.armStuckAssist(2);
+  });
+
+  engine.startGame('campaign', false);
+  assert.equal(engine.stuckAssistActive, true);
+  assert.equal(engine.weaponId, 'gatling');
+
+  // 暂停且未结算 -> 点击「重新开始」应保留助战
+  engine.pauseBattle();
+  assert.equal(engine.state, 'PAUSED');
+  await engine.renderActions.onRestartBattle();
+  assert.equal(engine.stuckAssistActive, true, '战斗中暂停重开且未结算应保留卡关助战');
+  assert.equal(engine.weaponId, 'gatling');
+  assert.equal(engine.fireRateBonus, 1.35);
+
+  // 结算后点「再次挑战」则清空单局助战
+  engine.triggerGameOver(false);
+  await engine.renderActions.onRestartBattle();
+  assert.equal(engine.stuckAssistActive, false, '结算后重开不再保留单局卡关助战');
+
+  // 验证 Renderer 在 renderOffsetX=64, renderOffsetY=32 与震屏叠加时，全部 setTransform 含偏移
+  const { Renderer } = loadTs('src/game/Renderer.ts', {
+    mocks: { GameEngine: { createTrooperBuffer: () => [{ x: 360, y: 1140 }], fillTrooperPositions: () => 1 } },
+  });
+  const transforms = [];
+  const noop = () => {};
+  const ctx = {
+    canvas: { width: 1200, height: 2000 },
+    font: '',
+    textAlign: 'left',
+    textBaseline: 'alphabetic',
+    fillStyle: '',
+    strokeStyle: '',
+    lineWidth: 1,
+    globalAlpha: 1,
+    save: noop,
+    restore: noop,
+    translate: noop,
+    scale: noop,
+    rotate: noop,
+    setTransform: (...args) => transforms.push(args),
+    setLineDash: noop,
+    beginPath: noop,
+    closePath: noop,
+    moveTo: noop,
+    lineTo: noop,
+    quadraticCurveTo: noop,
+    arc: noop,
+    ellipse: noop,
+    fill: noop,
+    stroke: noop,
+    drawImage: noop,
+    measureText: (t) => ({ width: String(t).length * 14 }),
+    fillRect: noop,
+    createRadialGradient: () => ({ addColorStop: noop }),
+    createLinearGradient: () => ({ addColorStop: noop }),
+    fillText: noop,
+  };
+  const fakeAssets = { sprites: {}, whiteSprites: {}, cachedRoad: null, shadowOval: null, loadAll() {} };
+  const renderer = new Renderer(ctx, fakeAssets);
+  engine.startGame('campaign', false);
+  const zombie = engine.zombiePool.acquire();
+  zombie.x = 300;
+  zombie.y = 500;
+  zombie.dying = false;
+
+  engine.render();
+  const snap = {
+    ...getCapturedSnap(),
+    state: 'PLAYING',
+    renderScale: 1.5,
+    renderOffsetX: 64,
+    renderOffsetY: 32,
+    shakeX: 6,
+    shakeY: -4,
+  };
+  const actions = new Proxy({}, { get: () => noop });
+  renderer.render(snap, actions);
+
+  assert.ok(transforms.length >= 6, `应捕获入口、丧尸、士兵与复位多次 setTransform（实际=${transforms.length}）`);
+  assert.deepEqual(transforms[0], [1.5, 0, 0, 1.5, 64 + 1.5 * 6, 32 + 1.5 * -4]);
+  assert.deepEqual(transforms.at(-1), [1.5, 0, 0, 1.5, 64, 32]);
+  for (const [, , , , e, f] of transforms) {
+    assert.ok(e >= 64 - 20 && f >= 32 - 20, `所有 setTransform 均应携带舞台居中偏移 (64, 32): e=${e}, f=${f}`);
+  }
+});

@@ -9,7 +9,7 @@
     "dev": "vite --port 5175",
     "gen:audio": "node scripts/generate-audio.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node --test tests/ad-manager.test.mjs tests/save-manager.test.mjs tests/levels.test.mjs tests/asset-loader.test.mjs tests/ftue-airdrop.test.mjs",
+    "test": "node --test tests/ad-manager.test.mjs tests/save-manager.test.mjs tests/levels.test.mjs tests/asset-loader.test.mjs tests/ftue-airdrop.test.mjs tests/platform-fixes.test.mjs",
     "build": "tsc --noEmit && vite build",
     "build:minigame": "node scripts/generate-audio.mjs && tsc --noEmit && vite build --config vite.minigame.config.ts && node scripts/package-minigame.mjs",
     "audit": "node scripts/audit-compliance.mjs",

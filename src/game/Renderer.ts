@@ -51,6 +51,8 @@ export interface RenderPoolView<T> {
 
 export interface RenderSnapshot {
   renderScale: number;
+  renderOffsetX?: number;
+  renderOffsetY?: number;
   mode: GameMode;
   endlessWave: number;
   totalSurviveSec: number;
@@ -307,13 +309,16 @@ export class Renderer {
 
   public render(snap: RenderSnapshot, actions: RenderActions): void {
     const ctx = this.ctx;
+    const s = snap.renderScale || 1;
+    const ox = snap.renderOffsetX || 0;
+    const oy = snap.renderOffsetY || 0;
+    const tx = snap.state === 'PLAYING' ? snap.shakeX : 0;
+    const ty = snap.state === 'PLAYING' ? snap.shakeY : 0;
     this.hitBoxes.clear();
     this.lastHudBottomY = Math.max(22, snap.safeTop) + 104;
 
     ctx.save();
-    if (snap.state === 'PLAYING') {
-      ctx.translate(snap.shakeX, snap.shakeY);
-    }
+    ctx.setTransform(s, 0, 0, s, ox + s * tx, oy + s * ty);
 
     this.renderRoad(snap.roadScroll);
     this.renderBossGroundTelegraphs(snap);
@@ -353,6 +358,7 @@ export class Renderer {
     }
 
     ctx.restore();
+    ctx.setTransform(s, 0, 0, s, ox, oy);
 
     if (snap.state === 'PLAYING') {
       this.renderThumbRail(snap);
@@ -739,6 +745,8 @@ export class Renderer {
     list.sort(compareZombieY);
 
     const s = snap.renderScale || 1;
+    const ox = snap.renderOffsetX || 0;
+    const oy = snap.renderOffsetY || 0;
     const tx = snap.state === 'PLAYING' ? snap.shakeX : 0;
     const ty = snap.state === 'PLAYING' ? snap.shakeY : 0;
 
@@ -799,8 +807,8 @@ export class Renderer {
           s * sn * sc,
           -s * sn * sc,
           s * c * sc,
-          s * (z.x + tx),
-          s * (z.y + ty),
+          ox + s * (z.x + tx),
+          oy + s * (z.y + ty),
         );
         if (img) ctx.drawImage(img, -drawW * 0.5, -drawH * 0.5, drawW, drawH);
         ctx.globalAlpha = 1;
@@ -818,8 +826,8 @@ export class Renderer {
         s * sn * squashX,
         -s * sn * squashY,
         s * c * squashY,
-        s * (z.x + tx),
-        s * (z.y + ty),
+        ox + s * (z.x + tx),
+        oy + s * (z.y + ty),
       );
 
       if (img) {
@@ -837,7 +845,7 @@ export class Renderer {
       }
     }
 
-    ctx.setTransform(s, 0, 0, s, s * tx, s * ty);
+    ctx.setTransform(s, 0, 0, s, ox + s * tx, oy + s * ty);
 
     // 通道 1.5：熔岩尸王冲锋蓄力红光 / 熔岩护盾 / 破盾虚弱闪金光（纯色半透明+边框，零 shadowBlur）
     if (snap.bossRef && snap.bossRef.active && !snap.bossRef.dying && snap.bossRef.y >= -140) {
@@ -953,6 +961,8 @@ export class Renderer {
     const showFlash = snap.muzzleFlash > 0 && snap.state === 'PLAYING';
     const isPlaying = snap.state === 'PLAYING';
     const s = snap.renderScale || 1;
+    const ox = snap.renderOffsetX || 0;
+    const oy = snap.renderOffsetY || 0;
     const tx = isPlaying ? snap.shakeX : 0;
     const ty = isPlaying ? snap.shakeY : 0;
 
@@ -985,7 +995,7 @@ export class Renderer {
       const c = wob !== 0 ? Math.cos(wob) : 1;
       const sn = wob !== 0 ? Math.sin(wob) : 0;
 
-      ctx.setTransform(s * c, s * sn, -s * sn, s * c, s * (p.x + tx), s * (py + ty));
+      ctx.setTransform(s * c, s * sn, -s * sn, s * c, ox + s * (p.x + tx), oy + s * (py + ty));
 
       if (pImg) {
         ctx.drawImage(pImg, -36, -56, 72, 114);
@@ -1008,7 +1018,7 @@ export class Renderer {
       }
     }
 
-    ctx.setTransform(s, 0, 0, s, s * tx, s * ty);
+    ctx.setTransform(s, 0, 0, s, ox + s * tx, oy + s * ty);
 
     // 小队人数徽章
     drawRoundedRect(ctx, snap.squadX - 50, PLAYER_Y + 56, 100, 34, 17);
