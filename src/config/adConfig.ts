@@ -40,12 +40,13 @@ export const AD_UNITS: Record<'wechat' | 'douyin', {
 
 /**
  * 抖音小游戏激励视频「激励再得」能力配置（tt.createRewardedVideoAd）
+ * 第一版关闭 multiton，确保广告承诺次数与实际发奖严格一致，稳妥通过提审。
  */
 export const DOUYIN_MULTITON_CONFIG = {
-  multiton: true,
-  multitonRewardMsg: '再看一个可额外领双倍惊喜',
-  multitonRewardTimes: 1,
-  progressTip: true,
+  multiton: false,
+  multitonRewardMsg: '',
+  multitonRewardTimes: 0,
+  progressTip: false,
 } as const;
 
 /**

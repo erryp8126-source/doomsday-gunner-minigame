@@ -145,3 +145,68 @@ test('AssetLoader 重试仍失败时生成离屏矢量占位图、白剪影与�
     globalThis.setTimeout = origSetTimeout;
   }
 });
+
+test('AssetLoader 重试时创建新 Image 实例且白剪影异常不阻断 isReady 完成态', () => {
+  const origSetTimeout = globalThis.setTimeout;
+  const scheduled = [];
+  globalThis.setTimeout = (fn, ms) => {
+    scheduled.push({ fn, ms });
+    return 1;
+  };
+
+  try {
+    const { AssetLoader } = loadTs('src/game/AssetLoader.ts');
+    let imageCreatedCount = 0;
+    let firstZombieFailed = false;
+    const fakeSdk = {
+      createOffscreenCanvas: (w, h) => {
+        // 让白剪影离屏画布创建抛错，仅保留预烘焙画布或模拟部分离屏受限设备
+        if (w === 126 && h === 159) {
+          // zombie 预烘焙成功，随后 buildWhiteSilhouette 同样申请 126x159：通过计数让第 2 次抛错
+          fakeSdk._zCalls = (fakeSdk._zCalls || 0) + 1;
+          if (fakeSdk._zCalls === 2) {
+            throw new Error('offscreen quota exceeded');
+          }
+        }
+        return createMockCanvas(w, h);
+      },
+      createImage: () => {
+        imageCreatedCount += 1;
+        return {
+          width: 128,
+          height: 128,
+          naturalWidth: 128,
+          naturalHeight: 128,
+          onload: null,
+          onerror: null,
+          set src(val) {
+            if (val.includes('zombie_normal') && !firstZombieFailed) {
+              firstZombieFailed = true;
+              this.onerror?.();
+            } else {
+              this.onload?.();
+            }
+          },
+        };
+      },
+    };
+
+    const loader = new AssetLoader(fakeSdk);
+    let completed = false;
+    loader.loadAll(() => {
+      completed = true;
+    });
+
+    assert.equal(imageCreatedCount, loader.totalCount);
+    assert.equal(scheduled.length, 1);
+    scheduled[0].fn();
+
+    assert.equal(imageCreatedCount, loader.totalCount + 1, '重试必须创建全新 Image 实例');
+    assert.equal(completed, true, '白剪影构建异常不得阻断 onComplete');
+    assert.equal(loader.isReady, true);
+    assert.ok(loader.sprites.zombie);
+    assert.equal(loader.whiteSprites.zombie, undefined);
+  } finally {
+    globalThis.setTimeout = origSetTimeout;
+  }
+});

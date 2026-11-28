@@ -136,9 +136,12 @@ export class PlatformSDK {
 
   private bannerAd: MinigameBannerAd | null = null;
   private interstitialAd: MinigameInterstitialAd | null = null;
+  private pendingInterstitialResolve: ((res: InterstitialAdResult) => void) | null = null;
 
   private ttRecorder: DouyinGameRecorderManager | null = null;
   private recordingActive = false;
+  private ttRecorderRunning = false;
+  private pendingRestartRecording = false;
   private recordStartMs = 0;
   private lastVideoPath = '';
   private lastVideoDurationSec = 0;
@@ -225,6 +228,7 @@ export class PlatformSDK {
     try {
       this.ttRecorder = tt.getGameRecorderManager();
       this.ttRecorder.onStart?.(() => {
+        this.ttRecorderRunning = true;
         this.recordStartMs = Date.now();
         this.lastVideoPath = '';
         this.lastVideoDurationSec = 0;
@@ -238,13 +242,23 @@ export class PlatformSDK {
               : 0;
         this.lastVideoDurationSec = Math.max(0, elapsedSec);
         this.lastVideoPath = elapsedSec >= 3 && res?.videoPath ? res.videoPath : '';
+        this.ttRecorderRunning = false;
         this.recordingActive = false;
+        if (this.pendingRestartRecording) {
+          this.pendingRestartRecording = false;
+          this.startBattleRecording();
+        }
       });
       this.ttRecorder.onError?.(() => {
+        this.ttRecorderRunning = false;
         this.recordingActive = false;
+        this.pendingRestartRecording = false;
       });
     } catch {
       this.ttRecorder = null;
+      this.ttRecorderRunning = false;
+      this.recordingActive = false;
+      this.pendingRestartRecording = false;
     }
   }
 
@@ -360,28 +374,32 @@ export class PlatformSDK {
     if (this.runtime === 'wechat') {
       const info =
         typeof wx.getWindowInfo === 'function' ? wx.getWindowInfo() : wx.getSystemInfoSync();
-      const safe = info.safeArea || { top: 0, bottom: info.windowHeight };
+      const winW = Math.max(1, info.windowWidth || 390);
+      const winH = Math.max(1, info.windowHeight || 844);
+      const safe = info.safeArea || { top: 0, bottom: winH };
       const safeTopPx = Math.max(0, safe.top || 0);
       return {
-        width: info.windowWidth,
-        height: info.windowHeight,
+        width: winW,
+        height: winH,
         pixelRatio: Math.min(info.pixelRatio || 1, MAX_PIXEL_RATIO),
         safeAreaTop: safeTopPx,
-        safeAreaBottom: Math.max(0, info.windowHeight - (safe.bottom || info.windowHeight)),
+        safeAreaBottom: Math.max(0, winH - (safe.bottom || winH)),
         safeTopLogical: this.computeCapsuleSafeTopLogical(wx, info, safeTopPx),
       };
     }
 
     if (this.runtime === 'douyin') {
       const info = tt.getSystemInfoSync();
-      const safe = info.safeArea || { top: 0, bottom: info.windowHeight };
+      const winW = Math.max(1, info.windowWidth || 390);
+      const winH = Math.max(1, info.windowHeight || 844);
+      const safe = info.safeArea || { top: 0, bottom: winH };
       const safeTopPx = Math.max(0, safe.top || 0);
       return {
-        width: info.windowWidth,
-        height: info.windowHeight,
+        width: winW,
+        height: winH,
         pixelRatio: Math.min(info.pixelRatio || 1, MAX_PIXEL_RATIO),
         safeAreaTop: safeTopPx,
-        safeAreaBottom: Math.max(0, info.windowHeight - (safe.bottom || info.windowHeight)),
+        safeAreaBottom: Math.max(0, winH - (safe.bottom || winH)),
         safeTopLogical: this.computeCapsuleSafeTopLogical(tt, info, safeTopPx),
       };
     }
@@ -449,6 +467,7 @@ export class PlatformSDK {
     let startX = 0;
     let startY = 0;
     let lastX = 0;
+    let lastY = 0;
     let totalMove = 0;
 
     const handleDown = (cx: number, cy: number) => {
@@ -457,6 +476,7 @@ export class PlatformSDK {
       startX = pt.x;
       startY = pt.y;
       lastX = pt.x;
+      lastY = pt.y;
       totalMove = 0;
       handlers.onDragStart(pt.x, pt.y);
     };
@@ -465,8 +485,10 @@ export class PlatformSDK {
       if (!dragging) return;
       const pt = this.toLogical(cx, cy);
       const dx = pt.x - lastX;
-      totalMove += Math.abs(dx) + Math.abs(pt.y - startY) * 0.1;
+      const dy = pt.y - lastY;
+      totalMove += Math.abs(dx) + Math.abs(dy);
       lastX = pt.x;
+      lastY = pt.y;
       handlers.onDragMove(pt.x, pt.y, dx);
     };
 
@@ -475,7 +497,7 @@ export class PlatformSDK {
       dragging = false;
       const pt = this.toLogical(cx, cy);
       const dist = Math.hypot(pt.x - startX, pt.y - startY);
-      if (dist < 18 && totalMove < 22) {
+      if (dist < 18 && totalMove < 26) {
         handlers.onTap(pt.x, pt.y);
       }
       handlers.onDragEnd();
@@ -722,27 +744,52 @@ export class PlatformSDK {
   }
 
   public startBattleRecording(): void {
+    if (this.runtime === 'douyin' && this.ttRecorder) {
+      if (this.ttRecorderRunning) {
+        const alreadyStopping = !this.recordingActive;
+        this.pendingRestartRecording = true;
+        this.recordingActive = true;
+        if (!alreadyStopping) {
+          try {
+            this.ttRecorder.stop();
+          } catch {
+            this.ttRecorderRunning = false;
+            this.pendingRestartRecording = false;
+            this.recordingActive = false;
+          }
+        }
+        return;
+      }
+      this.pendingRestartRecording = false;
+      this.lastVideoPath = '';
+      this.lastVideoDurationSec = 0;
+      this.recordStartMs = Date.now();
+      this.recordingActive = true;
+      this.ttRecorderRunning = true;
+      try {
+        this.ttRecorder.start({ duration: 60 });
+      } catch {
+        this.ttRecorderRunning = false;
+        this.recordingActive = false;
+      }
+      return;
+    }
+
     this.lastVideoPath = '';
     this.lastVideoDurationSec = 0;
     this.recordStartMs = Date.now();
     this.recordingActive = true;
-    if (this.runtime === 'douyin' && this.ttRecorder) {
-      try {
-        this.ttRecorder.start({ duration: 60 });
-      } catch {
-        this.recordingActive = false;
-      }
-    }
   }
 
   public stopBattleRecording(): void {
-    if (!this.recordingActive) return;
+    this.pendingRestartRecording = false;
+    if (!this.recordingActive && !this.ttRecorderRunning) return;
     this.recordingActive = false;
     if (this.runtime === 'douyin' && this.ttRecorder) {
       try {
         this.ttRecorder.stop();
       } catch {
-        // 忽略停止录屏异常
+        this.ttRecorderRunning = false;
       }
       return;
     }
@@ -957,13 +1004,15 @@ export class PlatformSDK {
     if (isPlaceholderAdUnit(adUnitId) || typeof tt.createRewardedVideoAd !== 'function') {
       return;
     }
-    this.ttRewardedAd = tt.createRewardedVideoAd({
-      adUnitId,
-      multiton: DOUYIN_MULTITON_CONFIG.multiton,
-      multitonRewardMsg: DOUYIN_MULTITON_CONFIG.multitonRewardMsg,
-      multitonRewardTimes: DOUYIN_MULTITON_CONFIG.multitonRewardTimes,
-      progressTip: DOUYIN_MULTITON_CONFIG.progressTip,
-    });
+    this.ttRewardedAd = DOUYIN_MULTITON_CONFIG.multiton
+      ? tt.createRewardedVideoAd({
+          adUnitId,
+          multiton: DOUYIN_MULTITON_CONFIG.multiton,
+          multitonRewardMsg: DOUYIN_MULTITON_CONFIG.multitonRewardMsg,
+          multitonRewardTimes: DOUYIN_MULTITON_CONFIG.multitonRewardTimes,
+          progressTip: DOUYIN_MULTITON_CONFIG.progressTip,
+        })
+      : tt.createRewardedVideoAd({ adUnitId });
     this.ttRewardedAd.onClose((res: { isEnded?: boolean; count?: number } | undefined) => {
       const resolver = this.pendingRewardResolve;
       const scene = this.activeRewardScene || 'revive_clear';
@@ -1008,6 +1057,15 @@ export class PlatformSDK {
         reason: 'unsupported',
         scene,
         message: '暂无可用广告，请稍后再试',
+      });
+    }
+
+    if (this.pendingRewardResolve) {
+      return Promise.resolve({
+        rewarded: false,
+        reason: 'load_failed',
+        scene,
+        message: '广告加载中，请稍后再试',
       });
     }
 
@@ -1057,8 +1115,9 @@ export class PlatformSDK {
         });
         this.bannerAd.onResize((size: { width: number; height: number }) => {
           if (!this.bannerAd) return;
-          this.bannerAd.style.left = (vp.width - size.width) / 2;
-          this.bannerAd.style.top = vp.height - vp.safeAreaBottom - size.height;
+          const curVp = this.viewport;
+          this.bannerAd.style.left = (curVp.width - size.width) / 2;
+          this.bannerAd.style.top = curVp.height - curVp.safeAreaBottom - size.height;
         });
         this.bannerAd.onError(() => {});
       }
@@ -1083,8 +1142,9 @@ export class PlatformSDK {
         });
         this.bannerAd.onResize((size: { width: number; height: number }) => {
           if (!this.bannerAd) return;
-          this.bannerAd.style.left = (vp.width - size.width) / 2;
-          this.bannerAd.style.top = vp.height - vp.safeAreaBottom - size.height;
+          const curVp = this.viewport;
+          this.bannerAd.style.left = (curVp.width - size.width) / 2;
+          this.bannerAd.style.top = curVp.height - curVp.safeAreaBottom - size.height;
         });
         this.bannerAd.onError(() => {});
       }
@@ -1100,9 +1160,21 @@ export class PlatformSDK {
     this.bannerAd?.hide?.();
   }
 
+  private resolvePendingInterstitial(res: InterstitialAdResult): void {
+    const resolver = this.pendingInterstitialResolve;
+    this.pendingInterstitialResolve = null;
+    if (resolver) {
+      resolver(res);
+    }
+  }
+
   public showInterstitialRaw(sceneLabel: string): Promise<InterstitialAdResult> {
     if (import.meta.env.VITE_TARGET === 'web' && this.webBridge) {
       return this.webBridge.showInterstitial(sceneLabel);
+    }
+
+    if (this.pendingInterstitialResolve) {
+      return Promise.resolve({ shown: false, reason: 'load_failed' });
     }
 
     if (this.runtime === 'wechat') {
@@ -1111,10 +1183,30 @@ export class PlatformSDK {
         return Promise.resolve({ shown: false, reason: 'unsupported' });
       }
       if (!this.interstitialAd) {
-        this.interstitialAd = wx.createInterstitialAd({ adUnitId });
-        this.interstitialAd.onError(() => {});
+        try {
+          this.interstitialAd = wx.createInterstitialAd({ adUnitId });
+          this.interstitialAd.onClose?.(() => {
+            this.resolvePendingInterstitial({ shown: true, reason: 'shown' });
+          });
+          this.interstitialAd.onError(() => {
+            this.resolvePendingInterstitial({ shown: false, reason: 'load_failed' });
+          });
+        } catch {
+          this.interstitialAd = null;
+          return Promise.resolve({ shown: false, reason: 'load_failed' });
+        }
       }
       const ad = this.interstitialAd;
+      if (typeof ad.onClose === 'function') {
+        return new Promise<InterstitialAdResult>((resolve) => {
+          this.pendingInterstitialResolve = resolve;
+          ad.show()
+            .catch(() => ad.load().then(() => ad.show()))
+            .catch(() => {
+              this.resolvePendingInterstitial({ shown: false, reason: 'load_failed' });
+            });
+        });
+      }
       return ad
         .show()
         .catch(() => ad.load().then(() => ad.show()))
@@ -1128,10 +1220,30 @@ export class PlatformSDK {
         return Promise.resolve({ shown: false, reason: 'unsupported' });
       }
       if (!this.interstitialAd) {
-        this.interstitialAd = tt.createInterstitialAd({ adUnitId });
-        this.interstitialAd.onError(() => {});
+        try {
+          this.interstitialAd = tt.createInterstitialAd({ adUnitId });
+          this.interstitialAd.onClose?.(() => {
+            this.resolvePendingInterstitial({ shown: true, reason: 'shown' });
+          });
+          this.interstitialAd.onError(() => {
+            this.resolvePendingInterstitial({ shown: false, reason: 'load_failed' });
+          });
+        } catch {
+          this.interstitialAd = null;
+          return Promise.resolve({ shown: false, reason: 'load_failed' });
+        }
       }
       const ad = this.interstitialAd;
+      if (typeof ad.onClose === 'function') {
+        return new Promise<InterstitialAdResult>((resolve) => {
+          this.pendingInterstitialResolve = resolve;
+          ad.load()
+            .then(() => ad.show())
+            .catch(() => {
+              this.resolvePendingInterstitial({ shown: false, reason: 'load_failed' });
+            });
+        });
+      }
       return ad
         .load()
         .then(() => ad.show())

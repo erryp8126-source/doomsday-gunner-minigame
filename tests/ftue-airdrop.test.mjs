@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { loadTs } from './helpers/loadTs.mjs';
 
-function createEngineHarness(prepopulateSave) {
+function createEngineHarness(prepopulateSave, options = {}) {
   const typesMod = loadTs('src/game/types.ts');
   const adConfigMod = loadTs('src/config/adConfig.ts');
   const levelsMod = loadTs('src/config/levels.ts', { mocks: { types: typesMod } });
@@ -14,6 +14,12 @@ function createEngineHarness(prepopulateSave) {
   });
 
   let capturedSnap = null;
+  let stopRecordingCalls = 0;
+  let startRecordingCalls = 0;
+  let resumeAudioCalls = 0;
+  let suspendAudioCalls = 0;
+  let visibilityOnHide = null;
+  let visibilityOnShow = null;
   const noop = () => {};
   const mockCtx = {
     font: '',
@@ -62,17 +68,29 @@ function createEngineHarness(prepopulateSave) {
     getEffectiveAdPlatform: () => 'wechat',
     getSidebarStatus: () => ({ supported: false, fromSidebar: false }),
     getRecorderSnapshot: () => ({ hasVideo: false, durationSec: 0 }),
-    startBattleRecording: noop,
-    stopBattleRecording: noop,
+    startBattleRecording: () => {
+      startRecordingCalls += 1;
+    },
+    stopBattleRecording: () => {
+      stopRecordingCalls += 1;
+    },
     setMuted: noop,
     setVibrateEnabled: noop,
     vibrate: noop,
     playSound: noop,
-    suspendAudio: noop,
-    resumeAudio: noop,
+    suspendAudio: () => {
+      suspendAudioCalls += 1;
+    },
+    resumeAudio: () => {
+      resumeAudioCalls += 1;
+    },
     bindInput: () => noop,
     onResize: () => noop,
-    onVisibilityChange: () => noop,
+    onVisibilityChange: (onHide, onShow) => {
+      visibilityOnHide = onHide;
+      visibilityOnShow = onShow;
+      return noop;
+    },
     getStorage: (k) => store.get(k) ?? null,
     setStorage: (k, v) => store.set(k, v),
     removeStorage: (k) => store.delete(k),
@@ -81,7 +99,7 @@ function createEngineHarness(prepopulateSave) {
   const saveManager = new SaveManager(fakeSdk);
   prepopulateSave?.(saveManager);
 
-  const { GameEngine } = loadTs('src/game/GameEngine.ts', {
+  const engineMod = loadTs('src/game/GameEngine.ts', {
     mocks: {
       AssetLoader: {
         AssetLoader: class {
@@ -106,16 +124,24 @@ function createEngineHarness(prepopulateSave) {
       SaveManager: { SaveManager },
     },
   });
+  const { GameEngine } = engineMod;
 
-  const engine = new GameEngine(fakeSdk, saveManager);
+  const engine = new GameEngine(fakeSdk, saveManager, options.adHooks);
   return {
     engine,
+    engineMod,
     saveManager,
     adConfigMod,
     levelsMod,
     weaponsMod,
     typesMod,
     getCapturedSnap: () => capturedSnap,
+    getStopRecordingCalls: () => stopRecordingCalls,
+    getStartRecordingCalls: () => startRecordingCalls,
+    getResumeAudioCalls: () => resumeAudioCalls,
+    getSuspendAudioCalls: () => suspendAudioCalls,
+    triggerVisibilityShow: () => visibilityOnShow?.(),
+    triggerVisibilityHide: () => visibilityOnHide?.(),
   };
 }
 
@@ -624,4 +650,212 @@ test('连败2次结算页显示卡关助战按钮，且卡关助战仅单局生�
 
   engine.startGame('campaign', false);
   assert.equal(engine.stuckAssistActive, false, '卡关助战为单局临时强化，下一正常局自动失效');
+});
+
+test('H3/H4: Boss 冲锋破盾进入 STUNNED 不秒杀且平滑回撤；击杀 Boss 后同帧子弹循环立即中止', () => {
+  // 1. H3: 冲锋期间破盾进入 STUNNED，不触发 loss=99 贴脸秒杀并向 chargeReturnY 撤退
+  const { engine } = createEngineHarness();
+  engine.startGame('campaign', false);
+  engine.squadCount = 5;
+  engine.spawnBoss();
+  const boss = engine.bossRef;
+  boss.hp = 800;
+  boss.x = engine.squadX;
+  boss.y = 950;
+  engine.bossState.action = 'CHARGE_DASH';
+  engine.bossState.chargeReturnY = 280;
+  engine.bossState.shieldActive = true;
+  engine.bossState.shieldHp = 10;
+  engine.bossState.shieldMaxHp = 500;
+
+  engine.applyZombieDamage(boss, 50, false, false, boss.x, boss.y);
+  assert.equal(engine.bossState.action, 'STUNNED');
+  assert.equal(engine.bossState.shieldActive, false);
+
+  engine.updateZombies(0.05);
+  assert.equal(engine.state, 'PLAYING', 'STUNNED 期间不得触发贴脸 loss=99 团灭');
+  assert.equal(engine.squadCount, 5);
+  assert.ok(boss.y < 950, '破盾眩晕后 Boss 应平滑退回安全纵坐标');
+
+  // 2. H4: 击杀 Boss 后立即中止同帧剩余子弹判定，后续木桶不被同帧误打爆
+  engine.startGame('campaign', false);
+  engine.spawnBoss();
+  const boss2 = engine.bossRef;
+  boss2.hp = 5;
+  boss2.x = 360;
+  boss2.y = 320;
+  engine.bossState.action = 'PATROL';
+
+  const barrel = engine.barrelPool.acquire();
+  barrel.x = 360;
+  barrel.y = 180;
+  barrel.hp = 5;
+  barrel.maxHp = 5;
+  barrel.radius = 52;
+
+  const b1 = engine.bulletPool.acquire();
+  b1.x = 360;
+  b1.y = 320;
+  b1.vx = 0;
+  b1.vy = -1000;
+  b1.damage = 50;
+  b1.radius = 8;
+  b1.splash = 0;
+
+  const b2 = engine.bulletPool.acquire();
+  b2.x = 360;
+  b2.y = 180;
+  b2.vx = 0;
+  b2.vy = -1000;
+  b2.damage = 50;
+  b2.radius = 8;
+  b2.splash = 0;
+
+  engine.updateBulletsAndCollisions(0.001);
+  assert.equal(engine.state, 'RESULT');
+  assert.equal(engine.isVictory, true);
+  assert.equal(barrel.active, true, '击杀 Boss 切入结算后，同帧剩余子弹不得再打爆后续木桶');
+  assert.equal(barrel.hp, 5);
+});
+
+test('H5/M1/M4/M5/M6/M7: 子弹池扩容320、录屏生命周期、广告中不恢复音频、异步重置隔离、无尽溢出与高胶囊不越界', async () => {
+  let resolveAd = null;
+  const h = createEngineHarness(undefined, {
+    adHooks: {
+      requestRewarded: () =>
+        new Promise((resolve) => {
+          resolveAd = resolve;
+        }),
+    },
+  });
+  const { engine, engineMod } = h;
+
+  // H5: 8人霰弹连发5轮(200发)不得被 FIFO 提前覆写
+  assert.ok(engineMod.MAX_BULLET_POOL >= 320);
+  engine.startGame('campaign', false);
+  engine.weaponId = 'shotgun';
+  engine.squadCount = 8;
+  let firstShotBullet = null;
+  for (let i = 0; i < 5; i++) {
+    engine.fireSquad();
+    if (i === 0) {
+      firstShotBullet = engine.bulletPool.getRawItems().find((b) => b.active);
+    }
+  }
+  assert.equal(engine.bulletPool.activeCount, 200);
+  assert.equal(firstShotBullet.active, true);
+
+  // M1: 暂停返回菜单 / 重开须停止抖音录屏
+  const prevStops = h.getStopRecordingCalls();
+  engine.pauseBattle();
+  await engine.renderActions.onBackToMenu();
+  assert.equal(h.getStopRecordingCalls(), prevStops + 1, '暂停返回主菜单须调用 stopBattleRecording');
+
+  engine.startGame('campaign', false);
+  engine.pauseBattle();
+  await engine.renderActions.onRestartBattle();
+  assert.equal(h.getStopRecordingCalls(), prevStops + 2, '暂停重开须调用 stopBattleRecording');
+
+  // M4: pausedByAd=true 期间触发 onShow 不得恢复游戏音频
+  const origRaf = globalThis.requestAnimationFrame;
+  const origCancelRaf = globalThis.cancelAnimationFrame;
+  globalThis.requestAnimationFrame = () => 1;
+  globalThis.cancelAnimationFrame = () => {};
+  try {
+    engine.start();
+    const resumeBefore = h.getResumeAudioCalls();
+    engine.setAdPause(true);
+    h.triggerVisibilityShow();
+    assert.equal(h.getResumeAudioCalls(), resumeBefore, '广告展示期间切回前台不得提前恢复游戏音频');
+    engine.setAdPause(false);
+    assert.equal(h.getResumeAudioCalls(), resumeBefore + 1);
+    engine.destroy();
+  } finally {
+    globalThis.requestAnimationFrame = origRaf;
+    globalThis.cancelAnimationFrame = origCancelRaf;
+  }
+
+  // M5: await 激励广告期间被重置存档后，旧广告回调不得强行开局
+  engine.renderActions.onStartSuperBattle();
+  engine.syncSaveAfterReset();
+  assert.equal(engine.state, 'MENU');
+  resolveAd(true);
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(engine.state, 'MENU', '状态版本号变更后旧广告回调必须放弃续接');
+
+  // M6: 无尽模式 36 人满编过波与杀 Boss 正确走溢出转化
+  engine.startGame('endless', false);
+  engine.squadCount = 36;
+  const bonus0 = engine.overflowAttackBonus;
+  const coins0 = engine.runCoins;
+  engine.advanceEndlessToNextWave();
+  assert.equal(engine.squadCount, 36);
+  assert.ok(engine.overflowAttackBonus > bonus0, '无尽过波满编应增加溢出攻击加成');
+  assert.ok(engine.runCoins > coins0, '无尽过波满编应获得溢出金币');
+
+  engine.spawnBoss();
+  const bonus1 = engine.overflowAttackBonus;
+  engine.killZombie(engine.bossRef);
+  assert.equal(engine.squadCount, 36);
+  assert.ok(engine.overflowAttackBonus > bonus1, '无尽击破尸王满编应增加溢出攻击加成');
+
+  // M7: 高胶囊安全区 (safeTop=200) + 主题关时，主菜单 Boss 展示不得越界压盖战绩栏 (y=480+40=520)
+  const { Renderer } = loadTs('src/game/Renderer.ts', {
+    mocks: {
+      GameEngine: { createTrooperBuffer: () => [], fillTrooperPositions: () => 0 },
+    },
+  });
+  const drawnImages = [];
+  const noop = () => {};
+  const ctx = {
+    font: '',
+    textAlign: 'left',
+    textBaseline: 'alphabetic',
+    fillStyle: '',
+    strokeStyle: '',
+    lineWidth: 1,
+    globalAlpha: 1,
+    save: noop,
+    restore: noop,
+    translate: noop,
+    scale: noop,
+    setTransform: noop,
+    setLineDash: noop,
+    beginPath: noop,
+    closePath: noop,
+    moveTo: noop,
+    lineTo: noop,
+    quadraticCurveTo: noop,
+    arc: noop,
+    ellipse: noop,
+    fill: noop,
+    stroke: noop,
+    drawImage: (_img, _x, y, _w, h) => drawnImages.push({ y, h }),
+    measureText: (t) => ({ width: String(t).length * 14 }),
+    fillRect: noop,
+    createRadialGradient: () => ({ addColorStop: noop }),
+    createLinearGradient: () => ({ addColorStop: noop }),
+    fillText: noop,
+  };
+  const renderer = new Renderer(ctx, {
+    isReady: true,
+    loadedCount: 11,
+    totalCount: 11,
+    sprites: { boss: {} },
+    whiteSprites: {},
+    cachedRoad: null,
+    shadowOval: null,
+  });
+  engine.setState('MENU');
+  engine.render();
+  const menuSnap = {
+    ...h.getCapturedSnap(),
+    state: 'MENU',
+    safeTop: 200,
+    level: h.levelsMod.getLevelConfig(3),
+  };
+  renderer.render(menuSnap, new Proxy({}, { get: () => noop }));
+  for (const imgCall of drawnImages) {
+    assert.ok(imgCall.y + imgCall.h <= 520, `主菜单 Boss 高度不得越界压盖下方战绩栏 (${imgCall.y + imgCall.h})`);
+  }
 });

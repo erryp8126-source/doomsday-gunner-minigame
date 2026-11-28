@@ -345,7 +345,8 @@ export const LEVELS: LevelConfig[] = [
 ];
 
 export function getLevelConfig(levelId: number): LevelConfig {
-  const index = Math.max(0, Math.min(LEVELS.length - 1, levelId - 1));
+  const safeId = Number.isFinite(levelId) ? Math.floor(levelId) : 1;
+  const index = Math.max(0, Math.min(LEVELS.length - 1, safeId - 1));
   return LEVELS[index];
 }
 
@@ -354,7 +355,7 @@ export function getLevelConfig(levelId: number): LevelConfig {
  * 1~6 波线性温和抬升；7 波起叠加缓坡增长，第 15 波约 7.19 倍，第 25 波约 15.01 倍。
  */
 export function getEndlessWaveScale(wave: number): number {
-  const safeWave = Math.max(1, Math.floor(wave));
+  const safeWave = Math.max(1, Number.isFinite(wave) ? Math.floor(wave) : 1);
   const base = 1 + (safeWave - 1) * 0.22;
   const late = safeWave > 6 ? Math.pow(safeWave - 6, 1.38) * 0.15 : 0;
   return Number((base + late).toFixed(2));
@@ -364,7 +365,7 @@ export function getEndlessWaveScale(wave: number): number {
  * 无尽模式熔岩尸王 Boss 血量平滑层级曲线
  */
 export function getEndlessBossHp(tier: number): number {
-  const safeTier = Math.max(1, Math.floor(tier));
+  const safeTier = Math.max(1, Number.isFinite(tier) ? Math.floor(tier) : 1);
   const mult =
     1 + (safeTier - 1) * 0.45 + Math.pow(Math.max(0, safeTier - 4), 1.25) * 0.28;
   return Math.round(2600 * mult);
@@ -374,7 +375,7 @@ export function getEndlessBossHp(tier: number): number {
  * 无尽狂潮模式动态波次生成器（每 40 秒推进 1 波，偶数波登场强化版熔岩尸王）
  */
 export function getEndlessWaveConfig(wave: number): LevelConfig {
-  const safeWave = Math.max(1, Math.floor(wave));
+  const safeWave = Math.max(1, Number.isFinite(wave) ? Math.floor(wave) : 1);
   const wOffset = safeWave - 1;
   const themeBase = LEVELS[wOffset % LEVELS.length];
   const bossTier = Math.max(1, Math.floor(safeWave / 2));

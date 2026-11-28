@@ -1800,12 +1800,12 @@ export class Renderer {
     const levelY = titleY + (isCapsule ? 48 : 46);
     const hasThemeTag = snap.level.theme !== 'normal';
     const levelBottom = levelY + (hasThemeTag ? 78 : 48);
-    const bossAvailH = Math.max(100, 472 + offsetY - levelBottom);
-    const bossSize = Math.min(196, Math.round(bossAvailH - 12));
+    const bossAvailH = Math.max(0, 472 + offsetY - levelBottom);
+    const bossSize = bossAvailH >= 48 ? Math.min(196, Math.round(bossAvailH - 12)) : 0;
     const bossY = levelBottom + Math.round((bossAvailH - bossSize) * 0.5);
 
     // 2D 精绘熔岩尸王展示
-    if (this.assets.sprites.boss) {
+    if (this.assets.sprites.boss && bossSize > 0) {
       const bob = Math.sin(snap.clock * 3) * 8;
       ctx.drawImage(
         this.assets.sprites.boss,

@@ -113,7 +113,7 @@ export const SKINS: SkinDef[] = [
   {
     id: 'dragon',
     name: '苍穹金龙',
-    desc: '攻速提升一成且开局加两人',
+    desc: '攻伤各提一成且开局加两人',
     unlockAds: AD_RULES.armoryUnlockTargets[2],
     primaryColor: '#f59e0b',
     accentColor: '#fef9c3',

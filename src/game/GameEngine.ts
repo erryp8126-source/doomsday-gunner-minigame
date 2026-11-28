@@ -86,6 +86,7 @@ export interface PerfMetrics {
 }
 
 export const MAX_VISIBLE_TROOPERS = 16;
+export const MAX_BULLET_POOL = 320;
 
 export function createTrooperBuffer(): TrooperPoint[] {
   const buf: TrooperPoint[] = [];
@@ -181,6 +182,8 @@ export class GameEngine {
   private mode: GameMode = 'campaign';
   private pausedByAd = false;
   private stateBeforePause: GameState = 'PLAYING';
+  private sessionEpoch = 0;
+  private navTransitionBusy = false;
   private rafId = 0;
   private lastTimestamp = 0;
   private clock = 0;
@@ -364,8 +367,8 @@ export class GameEngine {
       color: '#ffe066',
       splash: 0,
     }),
-    120,
-    120,
+    MAX_BULLET_POOL,
+    MAX_BULLET_POOL,
   );
 
   private readonly zombiePool = new ObjectPool<Zombie>(
@@ -559,8 +562,11 @@ export class GameEngine {
 
     this.renderActions = {
       onStartSuperBattle: async () => {
+        if (this.state !== 'MENU') return;
+        const expectedState = this.state;
+        const epoch = this.sessionEpoch;
         const ok = await this.requestRewardedAction('pre_battle_boost', '重型加特林与五人满配开局');
-        if (ok) {
+        if (ok && this.state === expectedState && this.sessionEpoch === epoch) {
           this.startGame('campaign', true);
         }
       },
@@ -613,8 +619,10 @@ export class GameEngine {
       },
       onTriggerAirdrop: () => this.openAirdropModal(),
       onAirdropChooseRocket: async () => {
+        if (this.state !== 'AIRDROP_MODAL') return;
+        const epoch = this.sessionEpoch;
         const ok = await this.requestRewardedAction('airdrop_supply', '空投高爆火箭筒');
-        if (ok) {
+        if (ok && this.state === 'AIRDROP_MODAL' && this.sessionEpoch === epoch) {
           this.airdrop.active = false;
           this.airdrop.claimed = true;
           this.weaponId = 'rocket';
@@ -624,8 +632,10 @@ export class GameEngine {
         }
       },
       onAirdropChooseDouble: async () => {
+        if (this.state !== 'AIRDROP_MODAL') return;
+        const epoch = this.sessionEpoch;
         const ok = await this.requestRewardedAction('airdrop_supply', '全队火力翻倍十五秒');
-        if (ok) {
+        if (ok && this.state === 'AIRDROP_MODAL' && this.sessionEpoch === epoch) {
           this.airdrop.active = false;
           this.airdrop.claimed = true;
           this.doubleFireTimer = AD_RULES.doubleFireDurationSec;
@@ -639,48 +649,76 @@ export class GameEngine {
         this.setState('PLAYING');
       },
       onReviveWatchAd: async () => {
+        if (this.state !== 'REVIVE_MODAL') return;
+        const epoch = this.sessionEpoch;
         const ok = await this.requestRewardedAction('revive_clear', '原地复活并清屏');
-        if (ok) {
+        if (ok && this.state === 'REVIVE_MODAL' && this.sessionEpoch === epoch) {
           this.performRevive();
         }
       },
       onReviveGiveUp: () => this.triggerGameOver(false),
       onResultClaimNormal: () => this.claimResultCoins(1),
       onResultClaimAd: async () => {
+        if (this.state !== 'RESULT' || this.resultClaimed) return;
+        const epoch = this.sessionEpoch;
         const isTriple =
           this.isVictory ||
           (this.mode === 'endless' && (this.endlessWave >= 3 || this.isNewEndlessRecord));
         const scene = isTriple ? 'result_triple' : 'result_double';
         const mult = isTriple ? 3 : 2;
         const ok = await this.requestRewardedAction(scene, `${mult}倍金币奖励`);
-        if (ok) {
+        if (ok && this.state === 'RESULT' && this.sessionEpoch === epoch && !this.resultClaimed) {
           this.claimResultCoins(mult);
         }
       },
       onRestartBattle: async () => {
-        if (this.state === 'PAUSED') {
-          this.sdk.resumeAudio();
+        if (this.navTransitionBusy) return;
+        this.navTransitionBusy = true;
+        try {
+          const expectedState = this.state;
+          const epoch = this.sessionEpoch;
+          if (this.state === 'PAUSED') {
+            this.sdk.resumeAudio();
+            this.sdk.stopBattleRecording();
+          }
+          if (this.state === 'RESULT' && !this.resultClaimed) {
+            this.claimResultCoins(1);
+          }
+          if (this.state === 'RESULT' && this.adHooks.tryInterstitial) {
+            await this.adHooks.tryInterstitial('局后重开插屏');
+          }
+          if (this.state !== expectedState || this.sessionEpoch !== epoch) {
+            return;
+          }
+          this.startGame(this.mode, false);
+        } finally {
+          this.navTransitionBusy = false;
         }
-        if (this.state === 'RESULT' && !this.resultClaimed) {
-          this.claimResultCoins(1);
-        }
-        if (this.state === 'RESULT' && this.adHooks.tryInterstitial) {
-          await this.adHooks.tryInterstitial('局后重开插屏');
-        }
-        this.startGame(this.mode, false);
       },
       onBackToMenu: async () => {
-        if (this.state === 'PAUSED') {
-          this.sdk.resumeAudio();
+        if (this.navTransitionBusy) return;
+        this.navTransitionBusy = true;
+        try {
+          const expectedState = this.state;
+          const epoch = this.sessionEpoch;
+          if (this.state === 'PAUSED') {
+            this.sdk.resumeAudio();
+            this.sdk.stopBattleRecording();
+          }
+          if (this.state === 'RESULT' && !this.resultClaimed) {
+            this.claimResultCoins(1);
+          }
+          if (this.state === 'RESULT' && this.adHooks.tryInterstitial) {
+            await this.adHooks.tryInterstitial('返回主菜单插屏');
+          }
+          if (this.state !== expectedState || this.sessionEpoch !== epoch) {
+            return;
+          }
+          this.currentLevel = getLevelConfig(this.saveManager.getData().selectedLevel);
+          this.setState('MENU');
+        } finally {
+          this.navTransitionBusy = false;
         }
-        if (this.state === 'RESULT' && !this.resultClaimed) {
-          this.claimResultCoins(1);
-        }
-        if (this.state === 'RESULT' && this.adHooks.tryInterstitial) {
-          await this.adHooks.tryInterstitial('返回主菜单插屏');
-        }
-        this.currentLevel = getLevelConfig(this.saveManager.getData().selectedLevel);
-        this.setState('MENU');
       },
       onTogglePause: () => {
         if (this.state === 'PLAYING') {
@@ -751,12 +789,13 @@ export class GameEngine {
         });
       },
       onStartStuckAssist: async () => {
-        if (this.mode !== 'campaign' || this.isVictory) return;
+        if (this.state !== 'RESULT' || this.mode !== 'campaign' || this.isVictory) return;
+        const epoch = this.sessionEpoch;
         const ok = await this.requestRewardedAction(
           'stuck_assist',
           '卡关助战：借用满级传说武器 1 局',
         );
-        if (!ok) return;
+        if (!ok || this.state !== 'RESULT' || this.sessionEpoch !== epoch) return;
         if (!this.resultClaimed) {
           this.claimResultCoins(1);
         }
@@ -813,7 +852,7 @@ export class GameEngine {
           }
         },
         () => {
-          if (this.state !== 'PAUSED') {
+          if (this.state !== 'PAUSED' && !this.pausedByAd) {
             this.sdk.resumeAudio();
           }
         },
@@ -933,6 +972,7 @@ export class GameEngine {
   }
 
   public syncSaveAfterReset(): void {
+    this.sdk.stopBattleRecording();
     const data = this.saveManager.getData();
     this.currentLevel = getLevelConfig(data.selectedLevel);
     this.sdk.setMuted(data.muted);
@@ -942,6 +982,7 @@ export class GameEngine {
   }
 
   private setState(next: GameState): void {
+    this.sessionEpoch += 1;
     this.state = next;
     this.adHooks.onStateChanged?.(next);
   }
@@ -1504,7 +1545,7 @@ export class GameEngine {
 
   private advanceEndlessToNextWave(): void {
     this.addRunCoins(this.currentLevel.clearCoins, false);
-    this.squadCount = Math.min(MAX_SQUAD_CAP, this.squadCount + 1);
+    this.addSquadWithOverflow(1, this.squadX, PLAYER_Y - 60);
     this.sdk.playSound('gate_pos');
     this.endlessWave += 1;
     this.currentLevel = getEndlessWaveConfig(this.endlessWave);
@@ -1723,6 +1764,9 @@ export class GameEngine {
     }
 
     if (bs.action === 'STUNNED') {
+      if (z.y > bs.chargeReturnY) {
+        z.y = Math.max(bs.chargeReturnY, z.y - 520 * dt);
+      }
       bs.stunTimer -= dt;
       if (bs.stunTimer <= 0) {
         bs.stunTimer = 0;
@@ -1933,11 +1977,20 @@ export class GameEngine {
         finalDmg = rawDamage * 0.2;
         this.spawnParticles(hitX, hitY, '#38bdf8', 2, 110, 5);
         if (bs.shieldHp <= 0) {
+          const wasCharging =
+            bs.action === 'CHARGE_WARN' ||
+            bs.action === 'CHARGE_DASH' ||
+            bs.action === 'CHARGE_RETURN';
           bs.shieldHp = 0;
           bs.shieldActive = false;
+          bs.shieldTimer = 0;
           bs.action = 'STUNNED';
           bs.stunTimer = 3.0;
           bs.chargeTimer = 0;
+          bs.chargeHitApplied = false;
+          if (!wasCharging) {
+            bs.chargeReturnY = Math.min(z.y, Math.min(bs.baseY, 560));
+          }
           this.addShake(14, 0.35);
           this.sdk.playSound('break_barrel');
           this.sdk.vibrate('heavy');
@@ -2046,7 +2099,7 @@ export class GameEngine {
       this.bossFireballPool.releaseAll();
       if (this.mode === 'endless') {
         this.addRunCoins(this.currentLevel.clearCoins, false);
-        this.squadCount = Math.min(MAX_SQUAD_CAP, this.squadCount + 2);
+        this.addSquadWithOverflow(2, this.squadX, PLAYER_Y - 60);
         this.sdk.playSound('victory');
         this.sdk.vibrate('heavy');
         this.endlessWave += 1;
@@ -2072,6 +2125,7 @@ export class GameEngine {
     const zombieItems = this.zombiePool.getRawItems();
 
     for (let bi = 0; bi < bulletItems.length; bi++) {
+      if (this.state !== 'PLAYING') return;
       const b = bulletItems[bi];
       if (!b.active) continue;
 
@@ -2175,6 +2229,10 @@ export class GameEngine {
               const sdy = sz.y - b.y;
               if (sdx * sdx + sdy * sdy <= splashSq) {
                 this.applyZombieDamage(sz, b.damage, false, true, b.x, b.y);
+                if (this.state !== 'PLAYING') {
+                  this.bulletPool.release(b);
+                  return;
+                }
               }
             }
           } else {
@@ -2183,6 +2241,10 @@ export class GameEngine {
             const rawDmg = isCrit ? b.damage * 2.0 : b.damage;
             if (!z.isBoss) z.y -= isCrit ? 10 : 5;
             const dealt = this.applyZombieDamage(z, rawDmg, isCrit, false, b.x, b.y);
+            if (this.state !== 'PLAYING') {
+              this.bulletPool.release(b);
+              return;
+            }
             if (isCrit) {
               this.addShake(5.5, 0.09);
               this.sdk.playSound('crit');
@@ -2317,7 +2379,11 @@ export class GameEngine {
       if (z.isBoss) {
         this.updateBossBehavior(z, dt);
         if (this.state !== 'PLAYING') return;
-        if (this.bossState.action === 'CHARGE_DASH' || this.bossState.action === 'CHARGE_RETURN') {
+        if (
+          this.bossState.action === 'CHARGE_DASH' ||
+          this.bossState.action === 'CHARGE_RETURN' ||
+          this.bossState.action === 'STUNNED'
+        ) {
           continue;
         }
       } else {
@@ -2503,8 +2569,9 @@ export class GameEngine {
       this.showToast(`已装备涂装：${skin.name}`, '#4ade80');
       return;
     }
+    const epoch = this.sessionEpoch;
     const ok = await this.requestRewardedAction('armory_unlock', `解锁传说涂装·${skin.name}`);
-    if (!ok) return;
+    if (!ok || this.sessionEpoch !== epoch) return;
     const res = this.saveManager.addSkinAdProgress(skin.id, skin.unlockAds);
     if (res.unlockedNow) {
       this.showToast(`恭喜解锁并装备「${skin.name}」`, '#fde047');

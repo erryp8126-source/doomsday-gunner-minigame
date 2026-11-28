@@ -81,7 +81,10 @@ declare global {
   interface MinigameInterstitialAd {
     load: () => Promise<void>;
     show: () => Promise<void>;
+    onClose?: (cb: () => void) => void;
+    offClose?: (cb: () => void) => void;
     onError: (cb: (err: unknown) => void) => void;
+    offError?: (cb: (err: unknown) => void) => void;
   }
 
   interface DouyinGameRecorderStopResult {

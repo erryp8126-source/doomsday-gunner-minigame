@@ -156,35 +156,35 @@ export class AssetLoader {
   }
 
   private loadSingleSprite(key: SpriteKey, onDone: () => void): void {
-    const img = this.sdk.createImage();
     let retried = false;
     let settled = false;
 
     const attemptLoad = () => {
+      const img = this.sdk.createImage();
+      img.onload = () => {
+        if (settled) return;
+        settled = true;
+        this.applyLoadedSprite(key, img);
+        onDone();
+      };
+
+      img.onerror = () => {
+        if (settled) return;
+        if (!retried) {
+          retried = true;
+          setTimeout(() => {
+            if (!settled) {
+              attemptLoad();
+            }
+          }, RETRY_DELAY_MS);
+          return;
+        }
+        settled = true;
+        this.applyFallbackSprite(key);
+        onDone();
+      };
+
       img.src = ASSET_URLS[key];
-    };
-
-    img.onload = () => {
-      if (settled) return;
-      settled = true;
-      this.applyLoadedSprite(key, img);
-      onDone();
-    };
-
-    img.onerror = () => {
-      if (settled) return;
-      if (!retried) {
-        retried = true;
-        setTimeout(() => {
-          if (!settled) {
-            attemptLoad();
-          }
-        }, RETRY_DELAY_MS);
-        return;
-      }
-      settled = true;
-      this.applyFallbackSprite(key);
-      onDone();
     };
 
     attemptLoad();
@@ -200,7 +200,10 @@ export class AssetLoader {
     const sprite = bakeSpec ? this.buildPreScaledSprite(img, bakeSpec.w, bakeSpec.h) : img;
     this.sprites[key] = sprite;
     if (WHITE_SILHOUETTE_KEYS.has(key)) {
-      this.whiteSprites[key as WhiteSpriteKey] = this.buildWhiteSilhouette(sprite);
+      const white = this.buildWhiteSilhouette(sprite);
+      if (white) {
+        this.whiteSprites[key as WhiteSpriteKey] = white;
+      }
     }
   }
 
@@ -215,7 +218,10 @@ export class AssetLoader {
     if (key === 'bg_road') {
       this.cachedRoad = this.buildSeamlessRoad(fallback);
     } else if (WHITE_SILHOUETTE_KEYS.has(key)) {
-      this.whiteSprites[key as WhiteSpriteKey] = this.buildWhiteSilhouette(fallback);
+      const white = this.buildWhiteSilhouette(fallback);
+      if (white) {
+        this.whiteSprites[key as WhiteSpriteKey] = white;
+      }
     }
   }
 
@@ -375,19 +381,22 @@ export class AssetLoader {
     }
   }
 
-  private buildWhiteSilhouette(src: DrawableSprite): HTMLCanvasElement {
-    const w = ('naturalWidth' in src && src.naturalWidth) || src.width || 64;
-    const h = ('naturalHeight' in src && src.naturalHeight) || src.height || 64;
-    const canvas = this.sdk.createOffscreenCanvas(w, h);
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
+  private buildWhiteSilhouette(src: DrawableSprite): HTMLCanvasElement | null {
+    try {
+      const w = ('naturalWidth' in src && src.naturalWidth) || src.width || 64;
+      const h = ('naturalHeight' in src && src.naturalHeight) || src.height || 64;
+      const canvas = this.sdk.createOffscreenCanvas(w, h);
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return null;
       ctx.clearRect(0, 0, w, h);
       ctx.drawImage(src, 0, 0, w, h);
       ctx.globalCompositeOperation = 'source-atop';
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, w, h);
       ctx.globalCompositeOperation = 'source-over';
+      return canvas;
+    } catch {
+      return null;
     }
-    return canvas;
   }
 }

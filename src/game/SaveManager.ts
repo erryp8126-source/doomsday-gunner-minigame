@@ -1,10 +1,25 @@
-import { getMilestoneForLevel } from '../config/levels';
+import { LEVELS, getMilestoneForLevel } from '../config/levels';
 import type { PlatformSDK } from '../sdk/PlatformSDK';
 import type { GuideStageKey, MilestoneDef, SaveData, SkinId, UpgradeGapInfo } from './types';
 
 const STORAGE_KEY = 'doomsday_gunner_save_v2';
 
 export const MAX_UPGRADE_LEVEL = 20;
+
+const VALID_SKIN_IDS: ReadonlySet<SkinId> = new Set(['standard', 'crimson', 'pulse', 'dragon']);
+
+function sanitizeInt(
+  value: unknown,
+  fallback: number,
+  min: number,
+  max = Number.MAX_SAFE_INTEGER,
+): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback;
+  }
+  const n = Math.floor(value);
+  return n < min ? min : n > max ? max : n;
+}
 
 export function getTodayDateKey(): string {
   const now = new Date();
@@ -67,26 +82,76 @@ export class SaveManager {
     if (!raw) return defaults;
 
     try {
-      const parsed = JSON.parse(raw) as Partial<SaveData>;
+      const parsed: unknown = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return defaults;
+      }
+      const obj = parsed as Record<string, unknown>;
+      const maxLv = Math.max(1, LEVELS.length);
+      const unlockedLevel = sanitizeInt(obj.unlockedLevel, defaults.unlockedLevel, 1, maxLv);
+      const selectedLevel = sanitizeInt(obj.selectedLevel, defaults.selectedLevel, 1, unlockedLevel);
+
+      const rawSkinProg =
+        obj.skinAdProgress && typeof obj.skinAdProgress === 'object' && !Array.isArray(obj.skinAdProgress)
+          ? (obj.skinAdProgress as Record<string, unknown>)
+          : {};
+      const rawGuide =
+        obj.guideSeen && typeof obj.guideSeen === 'object' && !Array.isArray(obj.guideSeen)
+          ? (obj.guideSeen as Record<string, unknown>)
+          : {};
+      const equippedSkin: SkinId =
+        typeof obj.equippedSkin === 'string' && VALID_SKIN_IDS.has(obj.equippedSkin as SkinId)
+          ? (obj.equippedSkin as SkinId)
+          : defaults.equippedSkin;
+
+      const claimedMilestones = Array.isArray(obj.claimedMilestones)
+        ? Array.from(
+            new Set(
+              obj.claimedMilestones
+                .filter((id): id is number => typeof id === 'number' && Number.isFinite(id))
+                .map((id) => Math.floor(id))
+                .filter((id) => id >= 1 && id <= maxLv),
+            ),
+          )
+        : [];
+
       return {
-        ...defaults,
-        ...parsed,
+        coins: sanitizeInt(obj.coins, defaults.coins, 0),
+        bestKills: sanitizeInt(obj.bestKills, defaults.bestKills, 0),
+        unlockedLevel,
+        selectedLevel,
+        attackLevel: sanitizeInt(obj.attackLevel, defaults.attackLevel, 1, MAX_UPGRADE_LEVEL),
+        fireRateLevel: sanitizeInt(obj.fireRateLevel, defaults.fireRateLevel, 1, MAX_UPGRADE_LEVEL),
+        squadLevel: sanitizeInt(obj.squadLevel, defaults.squadLevel, 2, 6),
+        equippedSkin,
         skinAdProgress: {
-          ...defaults.skinAdProgress,
-          ...(parsed.skinAdProgress || {}),
+          standard: sanitizeInt(rawSkinProg.standard, defaults.skinAdProgress.standard, 0),
+          crimson: sanitizeInt(rawSkinProg.crimson, defaults.skinAdProgress.crimson, 0),
+          pulse: sanitizeInt(rawSkinProg.pulse, defaults.skinAdProgress.pulse, 0),
+          dragon: sanitizeInt(rawSkinProg.dragon, defaults.skinAdProgress.dragon, 0),
         },
+        totalRunsPlayed: sanitizeInt(obj.totalRunsPlayed, defaults.totalRunsPlayed, 0),
+        totalRewardedAds: sanitizeInt(obj.totalRewardedAds, defaults.totalRewardedAds, 0),
+        muted: Boolean(obj.muted),
+        vibrateEnabled:
+          typeof obj.vibrateEnabled === 'boolean' ? obj.vibrateEnabled : defaults.vibrateEnabled,
+        tutorialDone: Boolean(obj.tutorialDone),
         guideSeen: {
-          ...defaults.guideSeen,
-          ...(parsed.guideSeen || {}),
+          barrel: Boolean(rawGuide.barrel),
+          gate: Boolean(rawGuide.gate),
+          boss: Boolean(rawGuide.boss),
         },
-        claimedMilestones: Array.isArray(parsed.claimedMilestones)
-          ? parsed.claimedMilestones.filter((id): id is number => typeof id === 'number')
-          : [],
-        stuckLevelId:
-          typeof parsed.stuckLevelId === 'number' ? parsed.stuckLevelId : defaults.stuckLevelId,
-        consecutiveFailures:
-          typeof parsed.consecutiveFailures === 'number' ? parsed.consecutiveFailures : 0,
-        stuckAssistPending: Boolean(parsed.stuckAssistPending),
+        lastVideoShareRewardDate:
+          typeof obj.lastVideoShareRewardDate === 'string' ? obj.lastVideoShareRewardDate : '',
+        lastSidebarRewardDate:
+          typeof obj.lastSidebarRewardDate === 'string' ? obj.lastSidebarRewardDate : '',
+        endlessBestWave: sanitizeInt(obj.endlessBestWave, defaults.endlessBestWave, 0),
+        endlessBestKills: sanitizeInt(obj.endlessBestKills, defaults.endlessBestKills, 0),
+        endlessBestTimeSec: sanitizeInt(obj.endlessBestTimeSec, defaults.endlessBestTimeSec, 0),
+        claimedMilestones,
+        stuckLevelId: sanitizeInt(obj.stuckLevelId, selectedLevel, 1, maxLv),
+        consecutiveFailures: sanitizeInt(obj.consecutiveFailures, 0, 0),
+        stuckAssistPending: Boolean(obj.stuckAssistPending),
       };
     } catch {
       return defaults;
@@ -109,7 +174,7 @@ export class SaveManager {
   }
 
   public addCoins(amount: number): void {
-    if (amount <= 0) return;
+    if (!Number.isFinite(amount) || amount <= 0) return;
     this.data.coins += Math.floor(amount);
     this.save();
   }

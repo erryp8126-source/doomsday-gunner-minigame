@@ -187,3 +187,65 @@ test('SaveManager 连败次数统计、切换关卡重置与卡关助战单局�
   assert.equal(sm.consumeStuckAssist(4), false, '助战仅单局有效，不可二次消费');
   assert.equal(sm.getConsecutiveFailures(4), 0);
 });
+
+test('SaveManager 损坏或越界存档自动清洗并安全恢复', () => {
+  const { SaveManager } = loadTs('src/game/SaveManager.ts');
+  const { LEVELS } = loadTs('src/config/levels.ts');
+  const sdk = createStorageSdk();
+
+  for (const badRaw of ['null', '[]', '"corrupt"', '{bad json']) {
+    sdk.setStorage('doomsday_gunner_save_v2', badRaw);
+    const smBad = new SaveManager(sdk);
+    assert.equal(smBad.getData().unlockedLevel, 1);
+    assert.equal(smBad.getData().selectedLevel, 1);
+    assert.equal(smBad.getData().coins, 0);
+  }
+
+  sdk.setStorage(
+    'doomsday_gunner_save_v2',
+    JSON.stringify({
+      coins: -999,
+      bestKills: 'bad',
+      unlockedLevel: 999,
+      selectedLevel: 500,
+      attackLevel: 0,
+      fireRateLevel: null,
+      squadLevel: 99,
+      equippedSkin: 'invalid_skin',
+      skinAdProgress: { crimson: -3, pulse: 'x', dragon: 2.8 },
+      claimedMilestones: [1, 1, 5, 999, 'bad', null],
+      stuckLevelId: -2,
+      consecutiveFailures: -7,
+      vibrateEnabled: 'yes',
+    }),
+  );
+
+  const sm = new SaveManager(sdk);
+  const d = sm.getData();
+  assert.equal(d.coins, 0);
+  assert.equal(d.bestKills, 0);
+  assert.equal(d.unlockedLevel, LEVELS.length);
+  assert.equal(d.selectedLevel, LEVELS.length);
+  assert.equal(d.attackLevel, 1);
+
+  sdk.setStorage(
+    'doomsday_gunner_save_v2',
+    JSON.stringify({ unlockedLevel: 3, selectedLevel: 'bad' }),
+  );
+  const smInvalidSel = new SaveManager(sdk);
+  assert.equal(smInvalidSel.getData().selectedLevel, 1);
+  assert.equal(d.fireRateLevel, 1);
+  assert.equal(d.squadLevel, 6);
+  assert.equal(d.equippedSkin, 'standard');
+  assert.equal(d.skinAdProgress.crimson, 0);
+  assert.equal(d.skinAdProgress.pulse, 0);
+  assert.equal(d.skinAdProgress.dragon, 2);
+  assert.deepEqual(d.claimedMilestones, [1, 5]);
+  assert.equal(d.stuckLevelId, 1);
+  assert.equal(d.consecutiveFailures, 0);
+  assert.equal(d.vibrateEnabled, true);
+
+  sm.addCoins(Number.NaN);
+  sm.addCoins(-10);
+  assert.equal(sm.getData().coins, 0);
+});

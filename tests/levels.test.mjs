@@ -101,3 +101,20 @@ test('levels 主线里程碑定义与下一里程碑推算正确', () => {
   assert.equal(getNextMilestone(15, [1, 5, 10]).clearLevel, 15);
   assert.equal(getNextMilestone(15, [1, 5, 10, 15]), null);
 });
+
+test('levels 异常/非有限数值入参兜底返回合法关卡与波次配置', () => {
+  const {
+    LEVELS,
+    getLevelConfig,
+    getEndlessWaveScale,
+    getEndlessBossHp,
+    getEndlessWaveConfig,
+  } = loadTs('src/config/levels.ts');
+
+  assert.equal(getLevelConfig(Number.NaN).id, 1);
+  assert.equal(getLevelConfig(-10).id, 1);
+  assert.equal(getLevelConfig(999).id, LEVELS.length);
+  assert.equal(getEndlessWaveScale(Number.NaN), 1);
+  assert.equal(getEndlessBossHp(Number.NaN), 2600);
+  assert.equal(getEndlessWaveConfig(Number.NaN).id, 1);
+});

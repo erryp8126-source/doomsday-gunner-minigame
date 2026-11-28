@@ -204,7 +204,7 @@ export function mountWebAdOverlay(
       <div class="iaa-row"><span>实时 FPS / DPR</span><span class="${fpsClass}">${perf.fps} FPS (${perf.dpr.toFixed(1)}x)</span></div>
       <div class="iaa-row"><span>帧间隔 均/峰</span><span class="iaa-stat-val">${perf.avgFrameMs} / ${perf.maxFrameMs} ms</span></div>
       <div class="iaa-row"><span>JS 耗时 均/峰</span><span class="iaa-stat-val">${perf.avgWorkMs} / ${perf.maxWorkMs} ms</span></div>
-      <div class="iaa-row"><span>子弹 / 粒子 / 飘字</span><span class="iaa-stat-val">${perf.bullets}/120 · ${perf.particles}/80 · ${perf.texts}/18</span></div>
+      <div class="iaa-row"><span>子弹 / 粒子 / 飘字</span><span class="iaa-stat-val">${perf.bullets}/320 · ${perf.particles}/80 · ${perf.texts}/18</span></div>
       <div class="iaa-row"><span>丧尸 / 桶 / 门</span><span>${perf.zombies} · ${perf.barrels} · ${perf.gates}</span></div>
       <div class="iaa-row"><span>小队 / 当前武器</span><span class="iaa-stat-warn">${perf.squadCount} 人 · ${weaponLabel}</span></div>
     `;
@@ -284,7 +284,7 @@ export function mountWebAdOverlay(
       clearModalTimer();
       modalEl.classList.remove('hidden');
       platformPill.textContent = isDouyin
-        ? '抖音激励视频模拟器（支持激励再得）'
+        ? '抖音激励视频模拟器'
         : '微信激励视频模拟器';
       adTitle.textContent = SCENE_TITLES[scene] || '激励视频广告';
       adDesc.textContent = `奖励内容：${rewardLabel}。需完整倒计时 3 秒后才能触发 isEnded = true 发奖。`;

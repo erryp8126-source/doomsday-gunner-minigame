@@ -147,3 +147,170 @@ test('AdManager 三层插屏频控（前两局免弹、激励后 30 秒免打扰
     Date.now = origDateNow;
   }
 });
+
+test('PlatformSDK 真机插屏必须等待 onClose 才解除暂停并允许下一局，且抖音关闭 multiton 与支持重入锁', async () => {
+  const realAdConfig = loadTs('src/config/adConfig.ts');
+  assert.equal(realAdConfig.DOUYIN_MULTITON_CONFIG.multiton, false, '第一版应关闭抖音 multiton');
+
+  const testAdConfig = {
+    ...realAdConfig,
+    AD_UNITS: {
+      wechat: {
+        rewardedVideo: 'adunit-wx-rew-test',
+        banner: 'adunit-wx-ban-test',
+        interstitial: 'adunit-wx-int-test',
+      },
+      douyin: {
+        rewardedVideo: 'adunit-tt-rew-test',
+        banner: 'adunit-tt-ban-test',
+        interstitial: 'adunit-tt-int-test',
+      },
+    },
+  };
+
+  const origWx = globalThis.wx;
+  const origTt = globalThis.tt;
+  try {
+    // 1. 微信插屏：show() resolve 后仍处于阻塞状态，直到 onClose() 触发
+    let wxIntClose = null;
+    let wxIntError = null;
+    let wxRewClose = null;
+    let touchHandlers = {};
+    globalThis.tt = undefined;
+    globalThis.wx = {
+      createCanvas: () => ({ width: 720, height: 1280, getContext: () => ({}) }),
+      createImage: () => ({}),
+      getSystemInfoSync: () => ({ windowWidth: 390, windowHeight: 844, pixelRatio: 1.5 }),
+      onTouchStart: (fn) => (touchHandlers.start = fn),
+      onTouchMove: (fn) => (touchHandlers.move = fn),
+      onTouchEnd: (fn) => (touchHandlers.end = fn),
+      onTouchCancel: (fn) => (touchHandlers.cancel = fn),
+      getStorageSync: () => '',
+      setStorageSync: () => {},
+      createInnerAudioContext: () => ({ src: '', volume: 1, obeyMuteSwitch: true, play: () => {} }),
+      createRewardedVideoAd: () => ({
+        load: async () => {},
+        show: async () => {},
+        onClose: (cb) => (wxRewClose = cb),
+        onError: () => {},
+      }),
+      createInterstitialAd: () => ({
+        load: async () => {},
+        show: async () => {},
+        onClose: (cb) => (wxIntClose = cb),
+        onError: (cb) => (wxIntError = cb),
+      }),
+    };
+
+    const { PlatformSDK } = loadTs('src/sdk/PlatformSDK.ts', {
+      viteTarget: 'minigame',
+      mocks: { adConfig: testAdConfig },
+    });
+    const { AdManager } = loadTs('src/sdk/AdManager.ts', {
+      mocks: { adConfig: testAdConfig },
+    });
+    const sdkWx = new PlatformSDK();
+    const adMgr = AdManager.getInstance(sdkWx);
+    adMgr.resetTracking();
+    const pauseEvents = [];
+    adMgr.bindCallbacks({
+      onPauseChanged: (p) => pauseEvents.push(p),
+      onToast: () => {},
+    });
+
+    let settled = false;
+    const intPromise = adMgr.tryShowInterstitial('局后重开', 5, Date.now() + 100_000).then((ok) => {
+      settled = true;
+      return ok;
+    });
+    // 等待 show() 微任务完成
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(settled, false, 'ad.show() 展示后尚未 onClose 时不得提前返回');
+    assert.deepEqual(pauseEvents, [true], '插屏未关闭前必须保持 pausedByAd = true');
+
+    wxIntClose();
+    const shownOk = await intPromise;
+    assert.equal(shownOk, true);
+    assert.deepEqual(pauseEvents, [true, false]);
+
+    // 微信插屏 onError 应安全解锁返回 false
+    const errPromise = sdkWx.showInterstitialRaw('异常测试');
+    await new Promise((r) => setTimeout(r, 10));
+    wxIntError(new Error('fail'));
+    const errRes = await errPromise;
+    assert.equal(errRes.shown, false);
+    assert.equal(errRes.reason, 'load_failed');
+
+    // M5: PlatformSDK.showRewardedVideoRaw 并发重入不覆盖首个 pending Promise
+    const r1 = sdkWx.showRewardedVideoRaw('revive_clear', '复活');
+    const r2 = await sdkWx.showRewardedVideoRaw('revive_clear', '复活');
+    assert.equal(r2.rewarded, false);
+    assert.equal(r2.reason, 'load_failed');
+    wxRewClose({ isEnded: true });
+    assert.equal((await r1).rewarded, true);
+
+    // L4: bindInput 轻微纵向抖动不误屏蔽 tap
+    let tapCount = 0;
+    const unbind = sdkWx.bindInput({
+      onTap: () => (tapCount += 1),
+      onDragStart: () => {},
+      onDragMove: () => {},
+      onDragEnd: () => {},
+      onKeyAxis: () => {},
+    });
+    touchHandlers.start({ changedTouches: [{ clientX: 100, clientY: 200 }] });
+    for (let i = 0; i < 6; i++) {
+      touchHandlers.move({ changedTouches: [{ clientX: 100, clientY: 200 + (i % 2 === 0 ? 2 : 0) }] });
+    }
+    touchHandlers.end({ changedTouches: [{ clientX: 101, clientY: 201 }] });
+    assert.equal(tapCount, 1, '轻触抖动仍应准确触发 onTap');
+    unbind();
+
+    // 2. 抖音端：关闭 multiton 传参，插屏同样等待 onClose
+    let ttRewardCreateOpts = null;
+    let ttIntClose = null;
+    globalThis.wx = undefined;
+    globalThis.tt = {
+      createCanvas: () => ({ width: 720, height: 1280, getContext: () => ({}) }),
+      createImage: () => ({}),
+      getSystemInfoSync: () => ({ windowWidth: 390, windowHeight: 844, pixelRatio: 1.5 }),
+      onTouchStart: () => {},
+      onTouchMove: () => {},
+      onTouchEnd: () => {},
+      onTouchCancel: () => {},
+      getStorageSync: () => '',
+      setStorageSync: () => {},
+      createInnerAudioContext: () => ({ src: '', volume: 1, obeyMuteSwitch: true, play: () => {} }),
+      createRewardedVideoAd: (opts) => {
+        ttRewardCreateOpts = opts;
+        return { load: async () => {}, show: async () => {}, onClose: () => {}, onError: () => {} };
+      },
+      createInterstitialAd: () => ({
+        load: async () => {},
+        show: async () => {},
+        onClose: (cb) => (ttIntClose = cb),
+        onError: () => {},
+      }),
+    };
+
+    const { PlatformSDK: TtPlatformSDK } = loadTs('src/sdk/PlatformSDK.ts', {
+      viteTarget: 'minigame',
+      mocks: { adConfig: testAdConfig },
+    });
+    const sdkTt = new TtPlatformSDK();
+    assert.equal('multiton' in ttRewardCreateOpts, false, '抖音激励广告不应透传 multiton: true');
+
+    let ttSettled = false;
+    const ttIntPromise = sdkTt.showInterstitialRaw('抖音重开').then((res) => {
+      ttSettled = true;
+      return res;
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(ttSettled, false, '抖音插屏在 onClose 前不得提前 resolve');
+    ttIntClose();
+    assert.equal((await ttIntPromise).shown, true);
+  } finally {
+    globalThis.wx = origWx;
+    globalThis.tt = origTt;
+  }
+});
