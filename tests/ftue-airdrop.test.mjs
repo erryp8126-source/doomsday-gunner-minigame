@@ -9,7 +9,9 @@ function createEngineHarness(prepopulateSave) {
   const weaponsMod = loadTs('src/config/weapons.ts', {
     mocks: { types: typesMod, adConfig: adConfigMod },
   });
-  const { SaveManager } = loadTs('src/game/SaveManager.ts', { mocks: { types: typesMod } });
+  const { SaveManager } = loadTs('src/game/SaveManager.ts', {
+    mocks: { types: typesMod, levels: levelsMod },
+  });
 
   let capturedSnap = null;
   const noop = () => {};
@@ -361,6 +363,9 @@ test('Renderer 主菜单首局减压、复活透明信息与结算页成长差�
     resumeGraceTimer: 0,
     weaponBanner: { active: false, timer: 0, duration: 1.2, weaponName: '', iconKey: '', accentColor: '#38bdf8' },
     guideBanner: { active: false, stage: '', text: '', accentColor: '#38bdf8', timer: 0, duration: 3 },
+    themeBanner: { active: false, theme: 'normal', label: '', subLabel: '', accentColor: '#38bdf8', timer: 0, duration: 2 },
+    stuckAssistActive: false,
+    overflowAttackBonus: 0,
     hasArmoryRedDot: false,
     skin: weaponsMod.SKINS[0],
     level: levelsMod.getLevelConfig(1),
@@ -382,6 +387,12 @@ test('Renderer 主菜单首局减压、复活透明信息与结算页成长差�
     comboPulse: 1,
     isVictory: false,
     justUnlockedEndless: false,
+    milestoneCongrats: null,
+    showStuckAssist: false,
+    hasEliteTitle: false,
+    hasPermanentCoinBonus: false,
+    hasFinalHonorBadge: false,
+    nextMilestone: levelsMod.getNextMilestone(1, []),
     reviveProgressPct: 0,
     revivesRemaining: 1,
     resultClaimed: false,
@@ -407,6 +418,10 @@ test('Renderer 主菜单首局减压、复活透明信息与结算页成长差�
       endlessBestWave: 0,
       endlessBestKills: 0,
       endlessBestTimeSec: 0,
+      claimedMilestones: [],
+      stuckLevelId: 1,
+      consecutiveFailures: 0,
+      stuckAssistPending: false,
     },
     toast: null,
     safeTop: 22,
@@ -478,4 +493,135 @@ test('Renderer 主菜单首局减压、复活透明信息与结算页成长差�
   );
   assert.ok(drawnTexts.includes('新纪录！最高波次突破至第 4 波！'));
   assert.ok(drawnTexts.includes('金币已充足，可回主界面升级战力！'));
+});
+
+test('36人满编溢出转化：木桶/蓝门溢出转攻击+4%(封顶+80%)与金币+20，触发主题关横幅与永久+15%金币', () => {
+  const { applySquadOverflowBonus, MAX_OVERFLOW_ATTACK_BONUS } = loadTs('src/game/types.ts');
+
+  const underCap = applySquadOverflowBonus(33, 2, 0);
+  assert.deepEqual(underCap, {
+    nextSquad: 35,
+    overflowCount: 0,
+    nextAttackBonus: 0,
+    coinGain: 0,
+  });
+
+  const crossingCap = applySquadOverflowBonus(35, 3, 0);
+  assert.deepEqual(crossingCap, {
+    nextSquad: 36,
+    overflowCount: 2,
+    nextAttackBonus: 0.08,
+    coinGain: 40,
+  });
+
+  const capped = applySquadOverflowBonus(36, 4, 0.72);
+  assert.equal(capped.nextSquad, 36);
+  assert.equal(capped.overflowCount, 4);
+  assert.equal(capped.nextAttackBonus, MAX_OVERFLOW_ATTACK_BONUS);
+  assert.equal(capped.coinGain, 80);
+
+  // 引擎实测第 3 关（黄金木桶爽刷关）+ 第 10 关永久金币加成
+  const { engine, saveManager } = createEngineHarness((sm) => {
+    for (let id = 1; id <= 10; id++) sm.markLevelCleared(id, 15);
+    sm.selectLevel(3);
+  });
+  engine.startGame('campaign', false);
+  assert.equal(engine.themeBanner.active, true);
+  assert.equal(engine.themeBanner.label, '黄金木桶爽刷关');
+  engine.update(2.1);
+  assert.equal(engine.themeBanner.active, false, '主题开场横幅 2 秒后自动淡出关闭');
+
+  // 黄金木桶关每次双门皆为正收益蓝门
+  engine.spawnGatePair();
+  const spawnedGates = engine.gatePool.getRawItems().filter((g) => g.active);
+  assert.equal(spawnedGates.length, 2);
+  assert.ok(spawnedGates.every((g) => g.value > 0), '黄金木桶爽刷关应生成双正收益蓝门');
+
+  // 36人满编后触发木桶/蓝门加人
+  engine.squadCount = 36;
+  const coinsBefore = engine.runCoins;
+  engine.addSquadWithOverflow(2, 360, 600);
+  assert.equal(engine.squadCount, 36);
+  assert.equal(engine.overflowAttackBonus, 0.08);
+  // 2 * 20 = 40 基础金币 * 1.15 永久加成 = 46 金币
+  assert.equal(engine.runCoins - coinsBefore, 46);
+  const floatTexts = engine.floatTextPool.getRawItems().filter((t) => t.active).map((t) => t.text);
+  assert.ok(floatTexts.includes('满编强化：攻击提升！'));
+});
+
+test('连败2次结算页显示卡关助战按钮，且卡关助战仅单局生效', async () => {
+  const { engine, saveManager, getCapturedSnap } = createEngineHarness((sm) => {
+    sm.markLevelCleared(1, 15);
+    sm.markLevelCleared(2, 15);
+    sm.markLevelCleared(3, 15);
+    sm.selectLevel(4);
+    sm.recordLevelFailure(4);
+    sm.recordLevelFailure(4);
+  });
+
+  engine.startGame('campaign', false);
+  engine.triggerGameOver(false);
+  engine.render();
+  const snap = getCapturedSnap();
+  assert.equal(snap.showStuckAssist, true, '第4关连败2次后结算页应激活卡关助战提示');
+
+  // 使用无头 Canvas 校验 Renderer 真能渲染卡关助战按钮与主菜单里程碑预告
+  const { Renderer } = loadTs('src/game/Renderer.ts', { mocks: { GameEngine: { createTrooperBuffer: () => [], fillTrooperPositions: () => 0 } } });
+  const drawnTexts = [];
+  const noop = () => {};
+  const ctx = {
+    canvas: { width: 720, height: 1280 },
+    font: '',
+    textAlign: 'left',
+    textBaseline: 'alphabetic',
+    fillStyle: '',
+    strokeStyle: '',
+    lineWidth: 1,
+    globalAlpha: 1,
+    save: noop,
+    restore: noop,
+    translate: noop,
+    scale: noop,
+    rotate: noop,
+    setTransform: noop,
+    setLineDash: noop,
+    beginPath: noop,
+    closePath: noop,
+    moveTo: noop,
+    lineTo: noop,
+    quadraticCurveTo: noop,
+    arc: noop,
+    ellipse: noop,
+    fill: noop,
+    stroke: noop,
+    drawImage: noop,
+    measureText: (t) => ({ width: String(t).length * 14 }),
+    fillRect: noop,
+    createRadialGradient: () => ({ addColorStop: noop }),
+    createLinearGradient: () => ({ addColorStop: noop }),
+    fillText: (text) => drawnTexts.push(String(text)),
+  };
+  const fakeAssets = {
+    sprites: {},
+    whiteSprites: {},
+    cachedRoad: null,
+    shadowOval: null,
+    loadAll() {},
+  };
+  const renderer = new Renderer(ctx, fakeAssets);
+  const actions = new Proxy({}, { get: () => noop });
+  renderer.render(snap, actions);
+  const assistIds = renderer.hitBoxes.boxes.slice(0, renderer.hitBoxes.activeCount).map((b) => b.id);
+  assert.ok(assistIds.includes('res_stuck_assist'));
+  assert.ok(drawnTexts.includes('卡关助战：看广告借用满级传说武器 1 局'));
+
+  // 看广告借用后进入助战局，随后重开普通局助战应失效
+  saveManager.armStuckAssist(4);
+  engine.startGame('campaign', false);
+  assert.equal(engine.stuckAssistActive, true);
+  assert.equal(engine.weaponId, 'gatling');
+  assert.equal(engine.squadCount >= 5, true);
+
+  engine.startGame('campaign', false);
+  assert.equal(engine.stuckAssistActive, false, '卡关助战为单局临时强化，下一正常局自动失效');
 });

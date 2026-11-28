@@ -1,5 +1,6 @@
+import { getMilestoneForLevel } from '../config/levels';
 import type { PlatformSDK } from '../sdk/PlatformSDK';
-import type { GuideStageKey, SaveData, SkinId, UpgradeGapInfo } from './types';
+import type { GuideStageKey, MilestoneDef, SaveData, SkinId, UpgradeGapInfo } from './types';
 
 const STORAGE_KEY = 'doomsday_gunner_save_v2';
 
@@ -44,6 +45,10 @@ export function createDefaultSaveData(): SaveData {
     endlessBestWave: 0,
     endlessBestKills: 0,
     endlessBestTimeSec: 0,
+    claimedMilestones: [],
+    stuckLevelId: 1,
+    consecutiveFailures: 0,
+    stuckAssistPending: false,
   };
 }
 
@@ -74,6 +79,14 @@ export class SaveManager {
           ...defaults.guideSeen,
           ...(parsed.guideSeen || {}),
         },
+        claimedMilestones: Array.isArray(parsed.claimedMilestones)
+          ? parsed.claimedMilestones.filter((id): id is number => typeof id === 'number')
+          : [],
+        stuckLevelId:
+          typeof parsed.stuckLevelId === 'number' ? parsed.stuckLevelId : defaults.stuckLevelId,
+        consecutiveFailures:
+          typeof parsed.consecutiveFailures === 'number' ? parsed.consecutiveFailures : 0,
+        stuckAssistPending: Boolean(parsed.stuckAssistPending),
       };
     } catch {
       return defaults;
@@ -159,17 +172,40 @@ export class SaveManager {
 
   public selectLevel(levelId: number): void {
     if (levelId >= 1 && levelId <= this.data.unlockedLevel) {
-      this.data.selectedLevel = levelId;
+      if (this.data.selectedLevel !== levelId) {
+        this.data.selectedLevel = levelId;
+        this.data.stuckLevelId = levelId;
+        this.data.consecutiveFailures = 0;
+        this.data.stuckAssistPending = false;
+      }
       this.save();
     }
   }
 
-  public markLevelCleared(levelId: number, maxLevelCount: number): void {
+  public markLevelCleared(
+    levelId: number,
+    maxLevelCount: number,
+  ): { newlyClaimedMilestone: MilestoneDef | null } {
     if (levelId >= this.data.unlockedLevel && levelId < maxLevelCount) {
       this.data.unlockedLevel = levelId + 1;
       this.data.selectedLevel = this.data.unlockedLevel;
     }
+
+    let newlyClaimedMilestone: MilestoneDef | null = null;
+    const milestone = getMilestoneForLevel(levelId);
+    if (milestone && !this.data.claimedMilestones.includes(levelId)) {
+      this.data.claimedMilestones = [...this.data.claimedMilestones, levelId];
+      if (milestone.rewardCoins > 0) {
+        this.data.coins += milestone.rewardCoins;
+      }
+      newlyClaimedMilestone = milestone;
+    }
+
+    this.data.consecutiveFailures = 0;
+    this.data.stuckAssistPending = false;
+    this.data.stuckLevelId = this.data.selectedLevel;
     this.save();
+    return { newlyClaimedMilestone };
   }
 
   public incrementRunCount(): void {
@@ -322,5 +358,59 @@ export class SaveManager {
     this.data.endlessBestTimeSec = Math.max(prevTime, surviveSec);
     this.save();
     return { isNewRecord };
+  }
+
+  public recordLevelFailure(levelId: number): number {
+    if (this.data.stuckLevelId !== levelId) {
+      this.data.stuckLevelId = levelId;
+      this.data.consecutiveFailures = 1;
+      this.data.stuckAssistPending = false;
+    } else {
+      this.data.consecutiveFailures += 1;
+    }
+    this.save();
+    return this.data.consecutiveFailures;
+  }
+
+  public resetLevelFailures(): void {
+    this.data.consecutiveFailures = 0;
+    this.data.stuckAssistPending = false;
+    this.save();
+  }
+
+  public getConsecutiveFailures(levelId: number): number {
+    return this.data.stuckLevelId === levelId ? this.data.consecutiveFailures : 0;
+  }
+
+  public armStuckAssist(levelId: number): void {
+    this.data.stuckLevelId = levelId;
+    this.data.stuckAssistPending = true;
+    this.save();
+  }
+
+  public consumeStuckAssist(levelId: number): boolean {
+    if (this.data.stuckAssistPending && this.data.stuckLevelId === levelId) {
+      this.data.stuckAssistPending = false;
+      this.data.consecutiveFailures = 0;
+      this.save();
+      return true;
+    }
+    return false;
+  }
+
+  public hasEliteTitle(): boolean {
+    return this.data.claimedMilestones.includes(5) || this.data.unlockedLevel > 5;
+  }
+
+  public hasPermanentCoinBonus(): boolean {
+    return this.data.claimedMilestones.includes(10) || this.data.unlockedLevel > 10;
+  }
+
+  public getPermanentCoinMultiplier(): number {
+    return this.hasPermanentCoinBonus() ? 1.15 : 1.0;
+  }
+
+  public hasFinalHonorBadge(): boolean {
+    return this.data.claimedMilestones.includes(15);
   }
 }

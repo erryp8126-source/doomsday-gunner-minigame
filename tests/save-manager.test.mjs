@@ -117,3 +117,73 @@ test('SaveManager getCheapestUpgradeGap 准确计算升级差额、复用对象�
   assert.equal(out.canUpgradeNow, false);
   assert.equal(out.minCost, 0);
 });
+
+test('SaveManager 里程碑一次性发放金币/称号/永久+15%金币加成与终极徽章', () => {
+  const { SaveManager } = loadTs('src/game/SaveManager.ts');
+  const sdk = createStorageSdk();
+  const sm = new SaveManager(sdk);
+
+  assert.equal(sm.hasEliteTitle(), false);
+  assert.equal(sm.hasPermanentCoinBonus(), false);
+  assert.equal(sm.getPermanentCoinMultiplier(), 1);
+  assert.equal(sm.hasFinalHonorBadge(), false);
+
+  const m1 = sm.markLevelCleared(1, 15);
+  assert.equal(m1.newlyClaimedMilestone?.clearLevel, 1);
+  assert.equal(sm.getData().coins, 0);
+
+  // 通关第 5 关：奖励 500 金币并解锁「精英战区」称号，重复通关不重复发币
+  const m5 = sm.markLevelCleared(5, 15);
+  assert.equal(m5.newlyClaimedMilestone?.clearLevel, 5);
+  assert.equal(sm.getData().coins, 500);
+  assert.equal(sm.hasEliteTitle(), true);
+  const m5Repeat = sm.markLevelCleared(5, 15);
+  assert.equal(m5Repeat.newlyClaimedMilestone, null);
+  assert.equal(sm.getData().coins, 500);
+
+  // 通关第 10 关：奖励 1000 金币并激活永久金币 +15%
+  const m10 = sm.markLevelCleared(10, 15);
+  assert.equal(m10.newlyClaimedMilestone?.clearLevel, 10);
+  assert.equal(sm.getData().coins, 1500);
+  assert.equal(sm.hasPermanentCoinBonus(), true);
+  assert.equal(sm.getPermanentCoinMultiplier(), 1.15);
+
+  // 通关第 15 关：解锁终极荣誉徽章并持久化
+  const m15 = sm.markLevelCleared(15, 15);
+  assert.equal(m15.newlyClaimedMilestone?.clearLevel, 15);
+  assert.equal(sm.hasFinalHonorBadge(), true);
+  const reloaded = new SaveManager(sdk);
+  assert.equal(reloaded.hasEliteTitle(), true);
+  assert.equal(reloaded.getPermanentCoinMultiplier(), 1.15);
+  assert.equal(reloaded.hasFinalHonorBadge(), true);
+});
+
+test('SaveManager 连败次数统计、切换关卡重置与卡关助战单局消费', () => {
+  const { SaveManager } = loadTs('src/game/SaveManager.ts');
+  const sdk = createStorageSdk();
+  const sm = new SaveManager(sdk);
+
+  // 解锁至第 4 关
+  sm.markLevelCleared(1, 15);
+  sm.markLevelCleared(2, 15);
+  sm.markLevelCleared(3, 15);
+  assert.equal(sm.getData().selectedLevel, 4);
+
+  assert.equal(sm.recordLevelFailure(4), 1);
+  assert.equal(sm.recordLevelFailure(4), 2);
+  assert.equal(sm.getConsecutiveFailures(4), 2);
+
+  sm.armStuckAssist(4);
+  // 切换关卡会清空当前连败和待激活助战
+  sm.selectLevel(2);
+  assert.equal(sm.getConsecutiveFailures(4), 0);
+  assert.equal(sm.consumeStuckAssist(4), false);
+
+  sm.selectLevel(4);
+  sm.recordLevelFailure(4);
+  sm.recordLevelFailure(4);
+  sm.armStuckAssist(4);
+  assert.equal(sm.consumeStuckAssist(4), true, '单局消费卡关助战应返回 true');
+  assert.equal(sm.consumeStuckAssist(4), false, '助战仅单局有效，不可二次消费');
+  assert.equal(sm.getConsecutiveFailures(4), 0);
+});

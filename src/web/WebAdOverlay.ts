@@ -24,6 +24,7 @@ const SCENE_TITLES: Record<RewardedScene, string> = {
   result_double: '战败结算双倍金币',
   result_triple: '通关结算三倍金币',
   armory_unlock: '传说军械库永久解锁进度',
+  stuck_assist: '卡关助战：借用满级传说武器 1 局',
 };
 
 /**

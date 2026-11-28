@@ -6,7 +6,8 @@ export type RewardedScene =
   | 'revive_clear'
   | 'result_double'
   | 'result_triple'
-  | 'armory_unlock';
+  | 'armory_unlock'
+  | 'stuck_assist';
 
 /**
  * 微信 / 抖音双端 AppID 配置（个人主体上线前替换为正式 AppID）

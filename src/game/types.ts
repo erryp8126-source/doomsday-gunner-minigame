@@ -66,10 +66,13 @@ export interface SkinDef {
   startSquadBonus: number;
 }
 
+export type LevelTheme = 'normal' | 'speed' | 'shield' | 'gold';
+
 export interface LevelConfig {
   id: number;
   name: string;
   subtitle: string;
+  theme: LevelTheme;
   duration: number;
   hpMult: number;
   bossHp: number;
@@ -80,6 +83,14 @@ export interface LevelConfig {
   runnerRate: number;
   tankRate: number;
   clearCoins: number;
+}
+
+export interface MilestoneDef {
+  clearLevel: number;
+  titleText: string;
+  descText: string;
+  rewardCoins: number;
+  badgeText: string;
 }
 
 export interface PoolItem {
@@ -259,6 +270,10 @@ export interface SaveData {
   endlessBestWave: number;
   endlessBestKills: number;
   endlessBestTimeSec: number;
+  claimedMilestones: number[];
+  stuckLevelId: number;
+  consecutiveFailures: number;
+  stuckAssistPending: boolean;
 }
 
 export interface ToastMessage {
@@ -286,11 +301,69 @@ export interface GuideBannerState {
   duration: number;
 }
 
+export interface ThemeBannerState {
+  active: boolean;
+  theme: LevelTheme;
+  label: string;
+  subLabel: string;
+  accentColor: string;
+  timer: number;
+  duration: number;
+}
+
 export interface UpgradeGapInfo {
   minCost: number;
   canUpgradeNow: boolean;
   gap: number;
   allMaxed: boolean;
+}
+
+export const MAX_SQUAD_CAP = 36;
+export const MAX_OVERFLOW_ATTACK_BONUS = 0.8;
+export const OVERFLOW_ATTACK_PER_TROOPER = 0.04;
+export const OVERFLOW_COINS_PER_TROOPER = 20;
+
+export interface SquadOverflowResult {
+  nextSquad: number;
+  overflowCount: number;
+  nextAttackBonus: number;
+  coinGain: number;
+}
+
+export function applySquadOverflowBonus(
+  currentSquad: number,
+  delta: number,
+  currentAttackBonus: number,
+): SquadOverflowResult {
+  if (delta <= 0) {
+    return {
+      nextSquad: Math.max(0, currentSquad + delta),
+      overflowCount: 0,
+      nextAttackBonus: currentAttackBonus,
+      coinGain: 0,
+    };
+  }
+  const rawNext = currentSquad + delta;
+  if (rawNext <= MAX_SQUAD_CAP) {
+    return {
+      nextSquad: rawNext,
+      overflowCount: 0,
+      nextAttackBonus: currentAttackBonus,
+      coinGain: 0,
+    };
+  }
+  const room = Math.max(0, MAX_SQUAD_CAP - currentSquad);
+  const overflowCount = Math.max(0, delta - room);
+  const nextAttackBonus = Math.min(
+    MAX_OVERFLOW_ATTACK_BONUS,
+    Number((currentAttackBonus + overflowCount * OVERFLOW_ATTACK_PER_TROOPER).toFixed(4)),
+  );
+  return {
+    nextSquad: MAX_SQUAD_CAP,
+    overflowCount,
+    nextAttackBonus,
+    coinGain: overflowCount * OVERFLOW_COINS_PER_TROOPER,
+  };
 }
 
 export function clamp(val: number, min: number, max: number): number {

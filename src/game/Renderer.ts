@@ -1,3 +1,4 @@
+import { getLevelThemeMeta } from '../config/levels';
 import { SKINS } from '../config/weapons';
 import type { RecorderSnapshot, SidebarStatus } from '../sdk/PlatformSDK';
 import type { AssetLoader } from './AssetLoader';
@@ -32,9 +33,11 @@ import {
   type Gate,
   type GuideBannerState,
   type LevelConfig,
+  type MilestoneDef,
   type Particle,
   type SaveData,
   type SkinDef,
+  type ThemeBannerState,
   type ToastMessage,
   type UpgradeGapInfo,
   type WeaponBannerState,
@@ -69,6 +72,9 @@ export interface RenderSnapshot {
   resumeGraceTimer: number;
   weaponBanner: WeaponBannerState;
   guideBanner: GuideBannerState;
+  themeBanner: ThemeBannerState;
+  stuckAssistActive: boolean;
+  overflowAttackBonus: number;
   hasArmoryRedDot: boolean;
   skin: SkinDef;
   level: LevelConfig;
@@ -90,6 +96,12 @@ export interface RenderSnapshot {
   comboPulse: number;
   isVictory: boolean;
   justUnlockedEndless: boolean;
+  milestoneCongrats: MilestoneDef | null;
+  showStuckAssist: boolean;
+  hasEliteTitle: boolean;
+  hasPermanentCoinBonus: boolean;
+  hasFinalHonorBadge: boolean;
+  nextMilestone: MilestoneDef | null;
   reviveProgressPct: number;
   revivesRemaining: number;
   resultClaimed: boolean;
@@ -139,6 +151,7 @@ export interface RenderActions {
   onClickSidebarGift: () => void;
   onShareScore: () => void;
   onShareHighlightVideo: () => void;
+  onStartStuckAssist: () => void;
 }
 
 const FONT_FAMILY = '"PingFang SC", "Microsoft YaHei", sans-serif';
@@ -1277,9 +1290,13 @@ export class Renderer {
       ctx.restore();
     }
 
-    // 分段引导横幅、切枪高光横幅、火力翻倍提示条 & 右侧非强制呼吸空投按钮
+    // 主题关横幅、分段引导横幅、切枪高光横幅、火力翻倍 / 助战 / 满编强化提示条 & 右侧空投按钮
     let subY =
       snap.bossRef && snap.bossRef.active && !snap.bossRef.dying ? top + 148 : top + 104;
+    if (snap.themeBanner.active) {
+      this.renderThemeBanner(snap, subY);
+      subY += 74;
+    }
     if (snap.guideBanner.active) {
       this.renderGuideBanner(snap, subY);
       subY += 62;
@@ -1300,6 +1317,42 @@ export class Renderer {
       ctx.fillText(`全队火力翻倍剩余 ${Math.ceil(snap.doubleFireTimer)} 秒`, LOGICAL_WIDTH / 2, subY + 17);
       ctx.restore();
       subY += 44;
+    }
+    if (snap.stuckAssistActive) {
+      ctx.save();
+      drawRoundedRect(ctx, 186, subY, 348, 32, 16);
+      ctx.fillStyle = 'rgba(180, 83, 9, 0.92)';
+      ctx.fill();
+      ctx.strokeStyle = '#fde047';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.fillStyle = '#fef08a';
+      ctx.font = `900 17px ${FONT_FAMILY}`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('传说助战火力生效中', LOGICAL_WIDTH / 2, subY + 16);
+      ctx.restore();
+      subY += 38;
+    }
+    if (snap.overflowAttackBonus > 0) {
+      ctx.save();
+      drawRoundedRect(ctx, 190, subY, 340, 32, 16);
+      ctx.fillStyle = 'rgba(22, 101, 52, 0.9)';
+      ctx.fill();
+      ctx.strokeStyle = '#4ade80';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.fillStyle = '#dcfce7';
+      ctx.font = `900 17px ${FONT_FAMILY}`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(
+        `满编强化 攻击+${Math.round(snap.overflowAttackBonus * 100)}%`,
+        LOGICAL_WIDTH / 2,
+        subY + 16,
+      );
+      ctx.restore();
+      subY += 38;
     }
 
     if (snap.airdrop.active && !snap.airdrop.claimed && snap.state === 'PLAYING') {
@@ -1322,6 +1375,44 @@ export class Renderer {
       ctx.fillText('恢复保护中', LOGICAL_WIDTH / 2, PLAYER_Y - 104);
       ctx.restore();
     }
+  }
+
+  private renderThemeBanner(snap: RenderSnapshot, baseY: number): void {
+    const tb = snap.themeBanner;
+    if (!tb.active || tb.duration <= 0) return;
+
+    const ctx = this.ctx;
+    const elapsed = Math.max(0, tb.duration - tb.timer);
+    const slideIn = Math.min(1, elapsed / 0.2);
+    const easedIn = 1 - (1 - slideIn) * (1 - slideIn);
+    const alpha = tb.timer < 0.3 ? Math.max(0, tb.timer / 0.3) : easedIn;
+
+    const bannerW = 636;
+    const bannerH = 66;
+    const drawX = (LOGICAL_WIDTH - bannerW) * 0.5;
+    const drawY = baseY - (1 - easedIn) * 20;
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    drawRoundedRect(ctx, drawX, drawY, bannerW, bannerH, 18);
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.94)';
+    ctx.fill();
+    ctx.strokeStyle = tb.accentColor;
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = `900 24px ${FONT_FAMILY}`;
+    ctx.fillStyle = '#0f172a';
+    ctx.fillText(`主题关：${tb.label}`, LOGICAL_WIDTH / 2 + 1.5, drawY + 23.5);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(`主题关：${tb.label}`, LOGICAL_WIDTH / 2, drawY + 22);
+
+    ctx.font = `700 17px ${FONT_FAMILY}`;
+    ctx.fillStyle = tb.accentColor;
+    ctx.fillText(tb.subLabel, LOGICAL_WIDTH / 2, drawY + 49);
+    ctx.restore();
   }
 
   private renderGuideBanner(snap: RenderSnapshot, baseY: number): void {
@@ -1695,9 +1786,10 @@ export class Renderer {
     const titleFontSize = top > 70 ? 52 : 68;
     const titleY = Math.max(162, top + 84);
     const levelY = Math.max(206, top + 124);
-    const levelBottom = levelY + 48;
-    const bossAvailH = Math.max(132, 494 - levelBottom);
-    const bossSize = Math.min(220, Math.round(bossAvailH - 8));
+    const hasThemeTag = snap.level.theme !== 'normal';
+    const levelBottom = levelY + (hasThemeTag ? 78 : 48);
+    const bossAvailH = Math.max(110, 464 - levelBottom);
+    const bossSize = Math.min(200, Math.round(bossAvailH - 12));
     const bossY = levelBottom + Math.round((bossAvailH - bossSize) * 0.5);
 
     // 2D 精绘熔岩尸王展示
@@ -1734,6 +1826,23 @@ export class Renderer {
       LOGICAL_WIDTH / 2,
       levelY + 24,
     );
+
+    if (hasThemeTag) {
+      const themeMeta = getLevelThemeMeta(snap.level.theme);
+      const pillW = 248;
+      const pillY = levelY + 50;
+      drawRoundedRect(ctx, (LOGICAL_WIDTH - pillW) * 0.5, pillY, pillW, 24, 12);
+      ctx.fillStyle = themeMeta.badgeBg;
+      ctx.fill();
+      ctx.strokeStyle = themeMeta.badgeBorder;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.fillStyle = '#ffffff';
+      ctx.font = `800 15px ${FONT_FAMILY}`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(`主题关 · ${themeMeta.label}`, LOGICAL_WIDTH / 2, pillY + 12);
+    }
 
     if (!disableInteraction) {
       drawButton(
@@ -1774,14 +1883,34 @@ export class Renderer {
       );
     }
 
-    // 纪录与涂装条
+    // 纪录、称号与涂装条
+    const titlePrefix = snap.hasFinalHonorBadge
+      ? '【末日传奇】 '
+      : snap.hasEliteTitle
+        ? '【精英战区】 '
+        : '';
+    const coinSuffix = snap.hasPermanentCoinBonus ? ' · 金币+15%' : '';
     ctx.fillStyle = '#fef08a';
-    ctx.font = 'bold 21px "PingFang SC", "Microsoft YaHei", sans-serif';
+    ctx.font = `bold 19px ${FONT_FAMILY}`;
     ctx.fillText(
-      `最高击杀：${snap.save.bestKills}  ·  当前涂装：${snap.skin.name}`,
+      `${titlePrefix}最高击杀：${snap.save.bestKills} · 涂装：${snap.skin.name}${coinSuffix}`,
       LOGICAL_WIDTH / 2,
-      512,
+      480,
     );
+
+    // 里程碑解锁预告条
+    drawRoundedRect(ctx, 56, 498, LOGICAL_WIDTH - 112, 32, 16);
+    ctx.fillStyle = snap.nextMilestone ? 'rgba(15, 23, 42, 0.86)' : 'rgba(120, 53, 15, 0.88)';
+    ctx.fill();
+    ctx.strokeStyle = snap.nextMilestone ? '#38bdf8' : '#fde047';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = snap.nextMilestone ? '#bae6fd' : '#fef08a';
+    ctx.font = `800 16px ${FONT_FAMILY}`;
+    const milestoneText = snap.nextMilestone
+      ? `距离下一里程碑：通关第 ${snap.nextMilestone.clearLevel} 关解锁${snap.nextMilestone.titleText}`
+      : '终极荣誉徽章已解锁：末日传奇（主线 15 关全通）';
+    ctx.fillText(milestoneText, LOGICAL_WIDTH / 2, 514);
 
     // 局外永久养成区（3 项紧凑卡片，零临时对象数组分配）
     const cardW = 198;
@@ -2326,7 +2455,22 @@ export class Renderer {
       ctx.font = '700 23px "PingFang SC", "Microsoft YaHei", sans-serif';
       ctx.fillText(`本局消灭感染者：${snap.kills}`, LOGICAL_WIDTH / 2, 346);
 
-      if (snap.justUnlockedEndless) {
+      if (snap.milestoneCongrats) {
+        const ms = snap.milestoneCongrats;
+        drawRoundedRect(ctx, 84, 364, LOGICAL_WIDTH - 168, 40, 12);
+        ctx.fillStyle = 'rgba(113, 63, 18, 0.9)';
+        ctx.fill();
+        ctx.strokeStyle = '#fde047';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.fillStyle = '#fef08a';
+        ctx.font = `900 18px ${FONT_FAMILY}`;
+        const msPraise =
+          ms.rewardCoins > 0
+            ? `里程碑达成！已奖励 ${ms.rewardCoins} 金币 · ${ms.badgeText}`
+            : `里程碑达成！已解锁${ms.titleText}`;
+        ctx.fillText(msPraise, LOGICAL_WIDTH / 2, 384);
+      } else if (snap.justUnlockedEndless) {
         ctx.fillStyle = '#4ade80';
         ctx.font = '900 22px "PingFang SC", "Microsoft YaHei", sans-serif';
         ctx.fillText('已解锁新模式：无尽狂潮！', LOGICAL_WIDTH / 2, 384);
@@ -2492,6 +2636,29 @@ export class Renderer {
           subText: '邀请好友挑战更高波次',
           subTextColor: '#fef08a',
           radius: 18,
+        },
+      );
+    }
+
+    if (snap.showStuckAssist) {
+      drawButton(
+        ctx,
+        this.hitBoxes,
+        'res_stuck_assist',
+        84,
+        924,
+        LOGICAL_WIDTH - 168,
+        84,
+        '卡关助战：看广告借用满级传说武器 1 局',
+        actions.onStartStuckAssist,
+        {
+          fillTop: '#dc2626',
+          fillBottom: '#991b1b',
+          borderColor: '#fde047',
+          fontSize: 20,
+          subText: '单局有效 · 满级传说火力与3名增援队友',
+          subTextColor: '#fef08a',
+          radius: 20,
         },
       );
     }

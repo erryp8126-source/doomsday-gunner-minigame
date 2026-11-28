@@ -1,5 +1,11 @@
 import { AD_RULES } from '../config/adConfig';
-import { LEVELS, getEndlessWaveConfig, getLevelConfig } from '../config/levels';
+import {
+  LEVELS,
+  getEndlessWaveConfig,
+  getLevelConfig,
+  getLevelThemeMeta,
+  getNextMilestone,
+} from '../config/levels';
 import { SKINS, WEAPONS, getSkinDef } from '../config/weapons';
 import type { PlatformSDK } from '../sdk/PlatformSDK';
 import { AssetLoader } from './AssetLoader';
@@ -9,10 +15,12 @@ import { SaveManager } from './SaveManager';
 import {
   LOGICAL_HEIGHT,
   LOGICAL_WIDTH,
+  MAX_SQUAD_CAP,
   PLAYER_Y,
   ROAD_LEFT,
   ROAD_RIGHT,
   ROAD_W,
+  applySquadOverflowBonus,
   clamp,
   type AirdropCrate,
   type Barrel,
@@ -26,8 +34,11 @@ import {
   type Gate,
   type GuideBannerState,
   type GuideStageKey,
+  type LevelTheme,
+  type MilestoneDef,
   type Particle,
   type SkinDef,
+  type ThemeBannerState,
   type ToastMessage,
   type UpgradeGapInfo,
   type WeaponBannerState,
@@ -45,7 +56,8 @@ export interface AdHooks {
       | 'revive_clear'
       | 'result_double'
       | 'result_triple'
-      | 'armory_unlock',
+      | 'armory_unlock'
+      | 'stuck_assist',
     label: string,
   ) => Promise<boolean>;
   tryInterstitial?: (sceneLabel: string) => Promise<void>;
@@ -200,6 +212,15 @@ export class GameEngine {
     timer: 0,
     duration: 3.0,
   };
+  private readonly themeBanner: ThemeBannerState = {
+    active: false,
+    theme: 'normal',
+    label: '',
+    subLabel: '',
+    accentColor: '#38bdf8',
+    timer: 0,
+    duration: 2.0,
+  };
   private pendingGuideStage: GuideStageKey | '' = '';
   private pendingGuideVisibleSec = 0;
   private readonly upgradeGapCache: UpgradeGapInfo = {
@@ -209,6 +230,9 @@ export class GameEngine {
     allMaxed: false,
   };
   private justUnlockedEndless = false;
+  private milestoneCongrats: MilestoneDef | null = null;
+  private overflowAttackBonus = 0;
+  private stuckAssistActive = false;
 
   private fireCd = 0;
   private recoil = 0;
@@ -230,6 +254,7 @@ export class GameEngine {
 
   private kills = 0;
   private runCoins = 0;
+  private runCoinsExact = 0;
   private combo = 0;
   private maxCombo = 0;
   private comboTimer = 0;
@@ -483,6 +508,9 @@ export class GameEngine {
       resumeGraceTimer: this.resumeGraceTimer,
       weaponBanner: this.weaponBanner,
       guideBanner: this.guideBanner,
+      themeBanner: this.themeBanner,
+      stuckAssistActive: false,
+      overflowAttackBonus: 0,
       hasArmoryRedDot: false,
       skin: getSkinDef(initSave.equippedSkin),
       level: initLevel,
@@ -504,6 +532,12 @@ export class GameEngine {
       comboPulse: this.comboPulse,
       isVictory: this.isVictory,
       justUnlockedEndless: this.justUnlockedEndless,
+      milestoneCongrats: null,
+      showStuckAssist: false,
+      hasEliteTitle: this.saveManager.hasEliteTitle(),
+      hasPermanentCoinBonus: this.saveManager.hasPermanentCoinBonus(),
+      hasFinalHonorBadge: this.saveManager.hasFinalHonorBadge(),
+      nextMilestone: getNextMilestone(initSave.unlockedLevel, initSave.claimedMilestones),
       reviveProgressPct: 0,
       revivesRemaining: AD_RULES.maxRevivesPerRun,
       resultClaimed: this.resultClaimed,
@@ -715,6 +749,19 @@ export class GameEngine {
             this.showToast(res.message, '#4ade80');
           }
         });
+      },
+      onStartStuckAssist: async () => {
+        if (this.mode !== 'campaign' || this.isVictory) return;
+        const ok = await this.requestRewardedAction(
+          'stuck_assist',
+          '卡关助战：借用满级传说武器 1 局',
+        );
+        if (!ok) return;
+        if (!this.resultClaimed) {
+          this.claimResultCoins(1);
+        }
+        this.saveManager.armStuckAssist(this.currentLevel.id);
+        this.startGame('campaign', false);
       },
     };
   }
@@ -970,12 +1017,20 @@ export class GameEngine {
 
     const skin = getSkinDef(this.saveManager.getData().equippedSkin);
     const baseSquad = this.saveManager.getInitialSquadSize() + skin.startSquadBonus;
+    const assistActive =
+      mode === 'campaign' && this.saveManager.consumeStuckAssist(this.currentLevel.id);
+    this.stuckAssistActive = assistActive;
+    const assistSquad = assistActive ? 3 : 0;
 
     this.squadX = LOGICAL_WIDTH / 2;
     this.targetX = LOGICAL_WIDTH / 2;
-    this.squadCount = withSuperStart ? Math.max(5, baseSquad + 3) : baseSquad;
-    this.weaponId = withSuperStart ? 'gatling' : 'pistol';
-    this.fireRateBonus = 1;
+    this.squadCount = Math.min(
+      MAX_SQUAD_CAP,
+      (withSuperStart ? Math.max(5, baseSquad + 3) : baseSquad) + assistSquad,
+    );
+    this.weaponId = assistActive || withSuperStart ? 'gatling' : 'pistol';
+    this.fireRateBonus = assistActive ? 1.35 : 1;
+    this.overflowAttackBonus = 0;
     this.doubleFireTimer = 0;
     this.invincibleTimer = 0;
     this.resumeGraceTimer = 0;
@@ -987,6 +1042,15 @@ export class GameEngine {
     this.pendingGuideStage = '';
     this.pendingGuideVisibleSec = 0;
     this.justUnlockedEndless = false;
+    this.milestoneCongrats = null;
+
+    if (this.currentLevel.theme !== 'normal') {
+      this.triggerThemeBanner(this.currentLevel.theme);
+    } else {
+      this.themeBanner.active = false;
+      this.themeBanner.theme = 'normal';
+      this.themeBanner.timer = 0;
+    }
 
     this.fireCd = 0;
     this.recoil = 0;
@@ -996,13 +1060,14 @@ export class GameEngine {
 
     this.elapsed = 0;
     this.zombieTimer = 0.55;
-    this.barrelTimer = 1.5;
-    this.gateTimer = 6.5;
+    this.barrelTimer = this.currentLevel.theme === 'gold' ? 0.8 : 1.5;
+    this.gateTimer = this.currentLevel.theme === 'gold' ? 3.5 : 6.5;
     this.bossSpawned = false;
     this.bossRef = null;
 
     this.kills = 0;
     this.runCoins = 0;
+    this.runCoinsExact = 0;
     this.combo = 0;
     this.maxCombo = 0;
     this.comboTimer = 0;
@@ -1031,7 +1096,9 @@ export class GameEngine {
     this.sdk.startBattleRecording();
     this.setState('PLAYING');
 
-    if (withSuperStart) {
+    if (assistActive) {
+      this.showToast(`卡关助战已激活！满级传说火力与 ${this.squadCount} 名队友出击`, '#fbbf24', 2.6);
+    } else if (withSuperStart) {
       this.showToast(`满配开局！重型加特林与 ${this.squadCount} 名队友出击`, '#4ade80');
     } else if (mode === 'endless') {
       this.showToast('无尽狂潮第1波 · 准备迎战', '#c084fc');
@@ -1047,7 +1114,8 @@ export class GameEngine {
       | 'revive_clear'
       | 'result_double'
       | 'result_triple'
-      | 'armory_unlock',
+      | 'armory_unlock'
+      | 'stuck_assist',
     label: string,
   ): Promise<boolean> {
     if (this.adHooks.requestRewarded) {
@@ -1063,6 +1131,7 @@ export class GameEngine {
   private triggerGameOver(victory: boolean): void {
     this.isVictory = victory;
     this.justUnlockedEndless = false;
+    this.milestoneCongrats = null;
     this.sdk.stopBattleRecording();
     this.resetBossState();
     this.saveManager.recordBestKills(this.kills);
@@ -1075,17 +1144,24 @@ export class GameEngine {
       );
       this.isNewEndlessRecord = rec.isNewRecord;
       this.runCoins = Math.max(30, this.runCoins);
+      this.runCoinsExact = this.runCoins;
       this.sdk.playSound('defeat');
       this.sdk.vibrate('medium');
     } else if (victory) {
       const wasUnlocked = this.saveManager.isEndlessUnlocked();
-      this.runCoins += this.currentLevel.clearCoins;
-      this.saveManager.markLevelCleared(this.currentLevel.id, LEVELS.length);
+      this.addRunCoins(this.currentLevel.clearCoins, false);
+      const { newlyClaimedMilestone } = this.saveManager.markLevelCleared(
+        this.currentLevel.id,
+        LEVELS.length,
+      );
+      this.milestoneCongrats = newlyClaimedMilestone;
       this.justUnlockedEndless = !wasUnlocked && this.saveManager.isEndlessUnlocked();
       this.sdk.playSound('victory');
       this.sdk.vibrate('heavy');
     } else {
+      this.saveManager.recordLevelFailure(this.currentLevel.id);
       this.runCoins = Math.max(20, this.runCoins);
+      this.runCoinsExact = this.runCoins;
       this.sdk.playSound('defeat');
       this.sdk.vibrate('medium');
     }
@@ -1151,6 +1227,12 @@ export class GameEngine {
         this.guideBanner.stage = '';
         this.pendingGuideStage = '';
         this.pendingGuideVisibleSec = 0;
+      }
+    }
+    if (this.themeBanner.active) {
+      this.themeBanner.timer = Math.max(0, this.themeBanner.timer - dt);
+      if (this.themeBanner.timer <= 0) {
+        this.themeBanner.active = false;
       }
     }
     if (this.hazardHurtCd > 0) this.hazardHurtCd = Math.max(0, this.hazardHurtCd - dt);
@@ -1237,28 +1319,39 @@ export class GameEngine {
     this.zombieTimer -= dt;
     if (this.zombieTimer <= 0) {
       this.spawnZombieWave();
+      const isSpeedTheme = lv.theme === 'speed';
+      const warmupSec = isSpeedTheme ? 5 : 12;
       if (this.bossSpawned || this.bossState.alertPending) {
-        this.zombieTimer = 2.8;
-      } else if (this.elapsed < 12) {
-        this.zombieTimer = Math.max(1.75, 2.05 - (this.elapsed / 12) * 0.25);
+        this.zombieTimer = isSpeedTheme ? 2.2 : 2.8;
+      } else if (this.elapsed < warmupSec) {
+        this.zombieTimer = isSpeedTheme
+          ? Math.max(1.25, 1.55 - (this.elapsed / warmupSec) * 0.25)
+          : Math.max(1.75, 2.05 - (this.elapsed / 12) * 0.25);
       } else {
         const p = Math.min(1, this.elapsed / lv.duration);
-        const ramp = Math.min(1, (this.elapsed - 12) / Math.max(10, lv.duration - 12));
+        const ramp = Math.min(
+          1,
+          (this.elapsed - warmupSec) / Math.max(10, lv.duration - warmupSec),
+        );
         const baseInterval = Math.max(0.85, 2.05 - p * 0.95 - (Math.min(5, lv.id) - 1) * 0.08);
-        this.zombieTimer = Math.max(0.62, baseInterval * (1 - 0.25 * ramp));
+        const rawInterval = baseInterval * (1 - 0.25 * ramp);
+        this.zombieTimer = isSpeedTheme
+          ? Math.max(0.48, rawInterval * 0.76)
+          : Math.max(0.62, rawInterval);
       }
     }
 
     this.barrelTimer -= dt;
     if (this.barrelTimer <= 0) {
       this.spawnBarrel();
-      this.barrelTimer = 4.6 + Math.random() * 1.5;
+      const baseBarrelInterval = 4.6 + Math.random() * 1.5;
+      this.barrelTimer = lv.theme === 'gold' ? baseBarrelInterval * 0.5 : baseBarrelInterval;
     }
 
     this.gateTimer -= dt;
     if (this.gateTimer <= 0 && !this.bossSpawned && !this.bossState.alertPending) {
       this.spawnGatePair();
-      this.gateTimer = 11.2;
+      this.gateTimer = lv.theme === 'gold' ? 5.6 : 11.2;
     }
 
     this.updateBulletsAndCollisions(dt);
@@ -1283,6 +1376,8 @@ export class GameEngine {
     const overflowMult = this.squadCount > 8 ? 1 + (this.squadCount - 8) * 0.08 : 1;
     const totalDmgMult =
       overflowMult *
+      (1 + this.overflowAttackBonus) *
+      (this.stuckAssistActive ? 1.6 : 1) *
       this.saveManager.getAttackMultiplier() *
       (1 + skin.damageBonus) *
       (this.doubleFireTimer > 0 ? 2 : 1);
@@ -1341,13 +1436,16 @@ export class GameEngine {
       let scale = 1.0;
       let radius = 28;
 
-      if (prog > 0.12 && r < lv.runnerRate) {
+      const runnerStartProg = lv.theme === 'speed' ? 0 : 0.12;
+      const tankStartProg = lv.theme === 'shield' ? 0.06 : 0.24;
+
+      if (prog >= runnerStartProg && r < lv.runnerRate) {
         kind = 'runner';
         hp = Math.floor(baseHp * 0.78);
         speed = Math.round((205 + prog * 58) * 1.18);
         scale = 0.96;
         radius = 26;
-      } else if (prog > 0.24 && r > 1 - lv.tankRate) {
+      } else if (prog >= tankStartProg && r > 1 - lv.tankRate) {
         kind = 'tank';
         hp = Math.floor(baseHp * 2.6);
         speed = 86 + prog * 22;
@@ -1405,8 +1503,8 @@ export class GameEngine {
   }
 
   private advanceEndlessToNextWave(): void {
-    this.runCoins += this.currentLevel.clearCoins;
-    this.squadCount = Math.min(36, this.squadCount + 1);
+    this.addRunCoins(this.currentLevel.clearCoins, false);
+    this.squadCount = Math.min(MAX_SQUAD_CAP, this.squadCount + 1);
     this.sdk.playSound('gate_pos');
     this.endlessWave += 1;
     this.currentLevel = getEndlessWaveConfig(this.endlessWave);
@@ -1728,10 +1826,14 @@ export class GameEngine {
     const lv = this.currentLevel;
     const prog = Math.min(1, this.elapsed / lv.duration);
 
-    const idx =
-      forcedIdx !== undefined
-        ? forcedIdx % BARREL_PICKS.length
-        : Math.floor(Math.random() * BARREL_PICKS.length);
+    let idx: number;
+    if (forcedIdx !== undefined) {
+      idx = forcedIdx % BARREL_PICKS.length;
+    } else if (lv.theme === 'shield' && Math.random() < 0.45) {
+      idx = 2; // 铁壁重盾关大幅提高高爆火箭筒掉率
+    } else {
+      idx = Math.floor(Math.random() * BARREL_PICKS.length);
+    }
     const pick = BARREL_PICKS[idx];
     const earlySoft = this.elapsed < 8 ? 0.82 : 1.0;
     const hp = Math.max(
@@ -1783,13 +1885,14 @@ export class GameEngine {
 
   private spawnGatePair(): void {
     const pairId = this.gatePairSeq++;
+    const allPositive = this.currentLevel.theme === 'gold';
     const leftPos = Math.random() > 0.5;
     this.triggerGuideBanner('gate');
 
     for (let i = 0; i < 2; i++) {
       const g = this.gatePool.acquire();
       const x = i === 0 ? ROAD_LEFT + ROAD_W * 0.25 : ROAD_LEFT + ROAD_W * 0.75;
-      const positive = i === 0 ? leftPos : !leftPos;
+      const positive = allPositive ? true : i === 0 ? leftPos : !leftPos;
       g.x = x;
       g.y = -75;
       g.w = ROAD_W * 0.48;
@@ -1800,8 +1903,13 @@ export class GameEngine {
       g.hitFlash = 0;
       g.hitAccum = 0;
       if (positive) {
-        g.kind = Math.random() > 0.35 ? 'squad' : 'rate';
-        g.value = g.kind === 'squad' ? 1 + Math.floor(Math.random() * 2) : 15;
+        if (allPositive) {
+          g.kind = i === 0 ? 'squad' : 'rate';
+          g.value = g.kind === 'squad' ? 2 + Math.floor(Math.random() * 2) : 20;
+        } else {
+          g.kind = Math.random() > 0.35 ? 'squad' : 'rate';
+          g.value = g.kind === 'squad' ? 1 + Math.floor(Math.random() * 2) : 15;
+        }
       } else {
         g.kind = 'squad';
         g.value = -(4 + Math.floor(Math.random() * 4));
@@ -1917,7 +2025,7 @@ export class GameEngine {
     else if (this.combo === 25) this.showToast('25 狂热连击，射速提升百分之十五', '#fb923c');
     else if (this.combo === 50) this.showToast('50 无双连击，全队火力全开', '#f87171');
 
-    this.runCoins += z.isBoss ? 80 : z.kind === 'tank' ? 8 : 3;
+    this.addRunCoins(z.isBoss ? 80 : z.kind === 'tank' ? 8 : 3, true);
     this.spawnParticles(
       z.x,
       z.y,
@@ -1937,8 +2045,8 @@ export class GameEngine {
       this.bossState.stunTimer = 0;
       this.bossFireballPool.releaseAll();
       if (this.mode === 'endless') {
-        this.runCoins += this.currentLevel.clearCoins;
-        this.squadCount = Math.min(36, this.squadCount + 2);
+        this.addRunCoins(this.currentLevel.clearCoins, false);
+        this.squadCount = Math.min(MAX_SQUAD_CAP, this.squadCount + 2);
         this.sdk.playSound('victory');
         this.sdk.vibrate('heavy');
         this.endlessWave += 1;
@@ -2027,11 +2135,14 @@ export class GameEngine {
               this.triggerWeaponBanner(br.rewardWeapon);
               this.spawnFloatText(br.x, br.y - 25, `装备 ${br.rewardLabel}`, '#38bdf8', 34);
             } else if (br.rewardType === 'squad') {
-              this.squadCount = Math.min(36, this.squadCount + br.rewardVal);
-              this.spawnFloatText(br.x, br.y - 25, `队友 +${br.rewardVal}`, '#4ade80', 34);
+              this.addSquadWithOverflow(br.rewardVal, br.x, br.y - 25);
             } else {
               this.fireRateBonus = Math.min(2.6, this.fireRateBonus + br.rewardVal);
               this.spawnFloatText(br.x, br.y - 25, '射速提升', '#fbbf24', 34);
+            }
+            if (this.currentLevel.theme === 'gold') {
+              const bonus = this.addRunCoins(12, true);
+              this.spawnFloatText(br.x, br.y - 62, `黄金木桶 +${bonus}金币`, '#fde047', 24);
             }
             this.barrelPool.release(br);
           }
@@ -2156,14 +2267,12 @@ export class GameEngine {
 
         this.sdk.playSound(g.value >= 0 ? 'gate_pos' : 'gate_neg');
         if (g.kind === 'squad') {
-          this.squadCount = Math.min(36, this.squadCount + g.value);
-          this.spawnFloatText(
-            this.squadX,
-            PLAYER_Y - 60,
-            g.value >= 0 ? `队友 +${g.value}` : `队友 ${g.value}`,
-            g.value >= 0 ? '#4ade80' : '#ff4757',
-            34,
-          );
+          if (g.value > 0) {
+            this.addSquadWithOverflow(g.value, this.squadX, PLAYER_Y - 60);
+          } else {
+            this.squadCount = Math.max(0, this.squadCount + g.value);
+            this.spawnFloatText(this.squadX, PLAYER_Y - 60, `队友 ${g.value}`, '#ff4757', 34);
+          }
           if (this.squadCount <= 0) {
             this.squadCount = 0;
             this.handleSquadZero();
@@ -2453,6 +2562,42 @@ export class GameEngine {
     return true;
   }
 
+  private triggerThemeBanner(theme: LevelTheme): void {
+    const meta = getLevelThemeMeta(theme);
+    this.themeBanner.active = true;
+    this.themeBanner.theme = theme;
+    this.themeBanner.label = meta.label;
+    this.themeBanner.subLabel = meta.subLabel;
+    this.themeBanner.accentColor = meta.accentColor;
+    this.themeBanner.duration = 2.0;
+    this.themeBanner.timer = 2.0;
+  }
+
+  private addRunCoins(baseAmount: number, applyGoldThemeBonus = true): number {
+    if (baseAmount <= 0) return 0;
+    const themeMult = applyGoldThemeBonus && this.currentLevel.theme === 'gold' ? 1.5 : 1.0;
+    const permMult = this.saveManager.getPermanentCoinMultiplier();
+    const prev = this.runCoins;
+    this.runCoinsExact += baseAmount * themeMult * permMult;
+    this.runCoins = Math.floor(this.runCoinsExact);
+    return Math.max(0, this.runCoins - prev);
+  }
+
+  private addSquadWithOverflow(delta: number, fxX: number, fxY: number): void {
+    const res = applySquadOverflowBonus(this.squadCount, delta, this.overflowAttackBonus);
+    this.squadCount = res.nextSquad;
+    if (res.overflowCount > 0) {
+      this.overflowAttackBonus = res.nextAttackBonus;
+      if (res.coinGain > 0) {
+        this.addRunCoins(res.coinGain, false);
+      }
+      this.spawnParticles(fxX, fxY, '#fde047', 12, 220, 7);
+      this.spawnFloatText(fxX, fxY, '满编强化：攻击提升！', '#fde047', 32);
+    } else if (delta > 0) {
+      this.spawnFloatText(fxX, fxY, `队友 +${delta}`, '#4ade80', 34);
+    }
+  }
+
   private render(): void {
     const save = this.saveManager.getData();
     const insets = this.sdk.getLogicalSafeInsets();
@@ -2492,6 +2637,9 @@ export class GameEngine {
     snap.resumeGraceTimer = this.resumeGraceTimer;
     snap.weaponBanner = this.weaponBanner;
     snap.guideBanner = this.guideBanner;
+    snap.themeBanner = this.themeBanner;
+    snap.stuckAssistActive = this.stuckAssistActive;
+    snap.overflowAttackBonus = this.overflowAttackBonus;
     snap.hasArmoryRedDot = hasArmoryRedDot;
     snap.skin = getSkinDef(save.equippedSkin);
     snap.level = this.currentLevel;
@@ -2512,6 +2660,16 @@ export class GameEngine {
     snap.comboPulse = this.comboPulse;
     snap.isVictory = this.isVictory;
     snap.justUnlockedEndless = this.justUnlockedEndless;
+    snap.milestoneCongrats = this.milestoneCongrats;
+    snap.showStuckAssist =
+      this.mode === 'campaign' &&
+      !this.isVictory &&
+      !this.stuckAssistActive &&
+      this.saveManager.getConsecutiveFailures(this.currentLevel.id) >= 2;
+    snap.hasEliteTitle = this.saveManager.hasEliteTitle();
+    snap.hasPermanentCoinBonus = this.saveManager.hasPermanentCoinBonus();
+    snap.hasFinalHonorBadge = this.saveManager.hasFinalHonorBadge();
+    snap.nextMilestone = getNextMilestone(save.unlockedLevel, save.claimedMilestones);
     snap.reviveProgressPct = Math.min(
       99,
       Math.round((this.elapsed / Math.max(1, this.currentLevel.duration)) * 100),
